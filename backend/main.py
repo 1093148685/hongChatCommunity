@@ -3476,6 +3476,10 @@ def admin_overview(authorization: str | None = Header(default=None)):
     with db() as conn:
         stats = get_chrome_data(conn)["stats"]
         stats["comments"] = conn.execute("SELECT COUNT(*) FROM comments").fetchone()[0]
+        stats["open_reports"] = conn.execute("SELECT COUNT(*) FROM content_reports WHERE status IN ('open','reviewing')").fetchone()[0]
+        stats["pending_market_orders"] = conn.execute("SELECT COUNT(*) FROM market_orders WHERE status IN ('PENDING','PENDING_AUDIT')").fetchone()[0]
+        stats["frozen_users"] = conn.execute("SELECT COUNT(*) FROM users WHERE account_status='frozen' AND COALESCE(deleted_at,'')=''").fetchone()[0]
+        stats["banned_users"] = conn.execute("SELECT COUNT(*) FROM users WHERE account_status='banned' AND COALESCE(deleted_at,'')=''").fetchone()[0]
         recent_posts = conn.execute(
             """
             SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
@@ -3485,7 +3489,44 @@ def admin_overview(authorization: str | None = Header(default=None)):
             """
         ).fetchall()
         recent_users = conn.execute("SELECT * FROM users ORDER BY id DESC LIMIT 8").fetchall()
-    return {"stats": stats, "recent_posts": [post_row_to_dict(r) for r in recent_posts], "recent_users": [public_user(u) for u in recent_users]}
+        recent_reports = conn.execute("""
+            SELECT r.*, reporter.username AS reporter, handler.username AS handler,
+                   CASE WHEN r.target_type='post' THEN p.content ELSE c.content END AS target_preview,
+                   COALESCE(p.title, cp.title, '') AS post_title,
+                   COALESCE(pu.username, cu.username, '') AS target_author
+            FROM content_reports r
+            JOIN users reporter ON reporter.id=r.reporter_id
+            LEFT JOIN users handler ON handler.id=r.handled_by
+            LEFT JOIN posts p ON r.target_type='post' AND p.id=r.target_id
+            LEFT JOIN comments c ON r.target_type='comment' AND c.id=r.target_id
+            LEFT JOIN posts cp ON r.target_type='comment' AND cp.id=c.post_id
+            LEFT JOIN users pu ON pu.id=p.user_id
+            LEFT JOIN users cu ON cu.id=c.user_id
+            WHERE r.status IN ('open','reviewing')
+            ORDER BY CASE r.status WHEN 'open' THEN 0 WHEN 'reviewing' THEN 1 ELSE 2 END, r.id DESC
+            LIMIT 6
+        """).fetchall()
+        pending_market_orders = conn.execute("""
+            SELECT o.id, o.status, o.created_at, o.price, o.cost_points, u.username, mi.title AS item_title
+            FROM market_orders o
+            JOIN users u ON u.id=o.user_id
+            JOIN market_items mi ON mi.id=o.item_id
+            WHERE o.status IN ('PENDING','PENDING_AUDIT')
+            ORDER BY o.id DESC LIMIT 6
+        """).fetchall()
+    return {
+        "stats": stats,
+        "todo": {
+            "open_reports": stats["open_reports"],
+            "pending_market_orders": stats["pending_market_orders"],
+            "frozen_users": stats["frozen_users"],
+            "banned_users": stats["banned_users"],
+        },
+        "recent_reports": [content_report_to_dict(r) for r in recent_reports],
+        "pending_market_orders": [{"id": o["id"], "status": o["status"], "created_at": o["created_at"], "username": o["username"], "item_title": o["item_title"], "price": o["price"], "cost_points": o["cost_points"]} for o in pending_market_orders],
+        "recent_posts": [post_row_to_dict(r) for r in recent_posts],
+        "recent_users": [public_user(u) for u in recent_users],
+    }
 
 
 @app.get("/api/admin/users")
