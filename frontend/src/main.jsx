@@ -1561,9 +1561,25 @@ function AdminPage({ me }) {
 
 function AdminOverview({ data }) {
   const stats = data?.stats || {}
-  return <><div className="admin-stat-grid">
-    <div className="admin-stat"><span>访问</span><b>{stats.visits || 0}</b></div><div className="admin-stat"><span>用户</span><b>{stats.users || 0}</b></div><div className="admin-stat"><span>帖子</span><b>{stats.posts || 0}</b></div><div className="admin-stat"><span>评论</span><b>{stats.comments || 0}</b></div>
-  </div><div className="admin-grid"><div className="admin-card"><h3>最新帖子</h3>{data?.recent_posts?.map(p => <div className="admin-line" key={p.id}><span>{p.title}</span><a href={`/post/${p.id}`}>查看</a></div>)}</div><div className="admin-card"><h3>新用户</h3>{data?.recent_users?.map(u => <div className="admin-line" key={u.id}><span>{u.username}</span><span>{u.role === 'admin' ? '管理员' : '用户'}</span></div>)}</div></div></>
+  const todo = data?.todo || {}
+  const todoCards = [
+    ['待处理举报', todo.open_reports || 0, 'fa-flag', 'reports'],
+    ['待审核/待发货', todo.pending_market_orders || 0, 'fa-store', 'market'],
+    ['冻结用户', todo.frozen_users || 0, 'fa-snowflake', 'users'],
+    ['封禁用户', todo.banned_users || 0, 'fa-ban', 'users'],
+  ]
+  return <>
+    <div className="admin-stat-grid">
+      <div className="admin-stat"><span>访问</span><b>{stats.visits || 0}</b></div><div className="admin-stat"><span>用户</span><b>{stats.users || 0}</b></div><div className="admin-stat"><span>帖子</span><b>{stats.posts || 0}</b></div><div className="admin-stat"><span>评论</span><b>{stats.comments || 0}</b></div>
+    </div>
+    <div className="admin-todo-grid">{todoCards.map(([label,value,icon,target]) => <button key={label} className={`admin-todo-card ${value ? 'needs-attention' : ''}`} onClick={() => document.querySelector(`.admin-tab:nth-child(${target === 'reports' ? 4 : target === 'market' ? 9 : 5})`)?.click()}><span><i className={`fas ${icon}`} /> {label}</span><b>{value}</b><small>{value ? '需要处理' : '暂无待办'}</small></button>)}</div>
+    <div className="admin-grid governance-grid">
+      <div className="admin-card"><h3><i className="fas fa-flag" /> 最近举报</h3>{data?.recent_reports?.length ? data.recent_reports.map(r => <div className="admin-line report-overview-line" key={r.id}><span><b>{r.target_type === 'post' ? '帖子' : '评论'} #{r.id}</b><small>{r.reason} · {r.reporter} · {relativeTime(r.created_at)}</small></span><a href="/admin" onClick={e => { e.preventDefault(); document.querySelector('.admin-tab:nth-child(4)')?.click() }}>处理</a></div>) : <div className="empty-state small-empty"><i className="fas fa-shield-check" /><p>暂无待处理举报</p></div>}</div>
+      <div className="admin-card"><h3><i className="fas fa-store" /> 市场待办</h3>{data?.pending_market_orders?.length ? data.pending_market_orders.map(o => <div className="admin-line" key={o.id}><span><b>{o.item_title}</b><small>{o.username} · {orderStatusText(o.status)} · {relativeTime(o.created_at)}</small></span><a href="/admin" onClick={e => { e.preventDefault(); document.querySelector('.admin-tab:nth-child(9)')?.click() }}>处理</a></div>) : <div className="empty-state small-empty"><i className="fas fa-circle-check" /><p>暂无市场待办</p></div>}</div>
+      <div className="admin-card"><h3>最新帖子</h3>{data?.recent_posts?.map(p => <div className="admin-line" key={p.id}><span>{p.title}</span><a href={`/post/${p.id}`}>查看</a></div>)}</div>
+      <div className="admin-card"><h3>新用户</h3>{data?.recent_users?.map(u => <div className="admin-line" key={u.id}><span>{u.username}</span><span>{u.role === 'admin' ? '管理员' : '用户'}</span></div>)}</div>
+    </div>
+  </>
 }
 function AdminPosts({ items, run }) { return <div className="admin-card"><h3>帖子管理</h3>{items.map(p => <div className="admin-row" key={p.id}><div><b>{p.title}</b><p>{p.author} · {p.time} · 评论 {p.comments || 0} · 浏览 {p.views || 0}</p></div><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => run(() => api(`/api/admin/posts/${p.id}`, { method:'PATCH', body: JSON.stringify({ pinned: !p.pinned }) }))}>{p.pinned ? '取消置顶' : '置顶'}</button><a className="btn btn-sm btn-secondary" href={`/post/${p.id}`}>查看</a><button className="btn btn-sm btn-danger" onClick={() => confirm('确定删除这个帖子及其评论？') && run(() => api(`/api/admin/posts/${p.id}`, { method:'DELETE' }))}>删除</button></div></div>)}</div> }
 function AdminComments({ items, run }) { return <div className="admin-card"><h3>评论管理</h3>{items.map(c => <div className="admin-row" key={c.id}><div><b>{c.author}</b><p>{c.content}</p><small>来自《{c.post_title}》 · {relativeTime(c.created_at)}</small></div><div className="admin-actions"><a className="btn btn-sm btn-secondary" href={`/post/${c.post_id}`}>查看帖子</a><button className="btn btn-sm btn-danger" onClick={() => confirm('确定删除这条评论？') && run(() => api(`/api/admin/comments/${c.id}`, { method:'DELETE' }))}>删除</button></div></div>)}</div> }
