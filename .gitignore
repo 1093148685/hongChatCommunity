@@ -37,3 +37,16 @@ logs/
 Thumbs.db
 .vscode/
 .idea/
+
+
+# Local AI/agent workspace files
+.hermes/
+.claude/
+AGENTS.md
+CLAUDE.md
+
+# Local scratch/demo files
+avatar-crop-standalone.html
+profile-gamify-market.html
+gamify_market_async.py
+scripts/
