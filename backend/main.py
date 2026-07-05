@@ -333,6 +333,11 @@ def default_settings() -> dict[str, str]:
         "qidao_client_id": "",
         "qidao_client_secret": "",
         "qidao_scope": "profile email",
+        "connect_oauth_enabled": "0",
+        "connect_client_id": "",
+        "connect_client_secret": "",
+        "connect_scope": "openid profile email trust_level",
+        "connect_issuer": "https://connect.ccocc.cyou",
         "banners_json": json.dumps(BANNERS, ensure_ascii=False),
     }
 
@@ -349,10 +354,13 @@ def get_settings(conn: sqlite3.Connection, include_secret: bool = False) -> dict
         data["smtp_password"] = "***"
     if not include_secret and data.get("qidao_client_secret"):
         data["qidao_client_secret"] = "***"
+    if not include_secret and data.get("connect_client_secret"):
+        data["connect_client_secret"] = "***"
     data["email_enabled"] = str(data.get("email_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     data["guest_access_restricted"] = str(data.get("guest_access_restricted", "0")) in {"1", "true", "True", "yes", "on"}
     data["captcha_enabled"] = str(data.get("captcha_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     data["qidao_oauth_enabled"] = str(data.get("qidao_oauth_enabled", "0")) in {"1", "true", "True", "yes", "on"}
+    data["connect_oauth_enabled"] = str(data.get("connect_oauth_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     try:
         data["comment_email_limit_24h"] = int(data.get("comment_email_limit_24h") or 8)
     except Exception:
@@ -786,6 +794,9 @@ def init_db() -> None:
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('captcha_enabled', '0')")
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('qidao_oauth_enabled', '0')")
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('qidao_scope', 'profile email')")
+        conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_oauth_enabled', '0')")
+        conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_scope', 'openid profile email trust_level')")
+        conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_issuer', 'https://connect.ccocc.cyou')")
         conn.execute("UPDATE site_settings SET value=? WHERE key='default_avatar' AND value LIKE 'https://yhdet.top/static/avatars/%'", (DEFAULT_AVATAR,))
         market_seed = [
             ("改名卡", "兑换后提交想修改的新昵称，管理员审核后处理。", 188, 20, ProductCategory.MEMBER_BENEFIT.value, "fa-id-card", '{"request_type":"rename"}'),
@@ -1792,8 +1803,16 @@ def qidao_user_fields(profile: dict[str, Any]) -> tuple[str, str, str, str]:
     return subject, nickname, avatar, email
 
 
-def safe_oauth_username(conn: sqlite3.Connection, preferred: str, subject: str) -> str:
-    base = re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff-]+", "", preferred or "")[:20] or f"栖岛用户{subject[-6:]}"
+def connect_user_fields(profile: dict[str, Any]) -> tuple[str, str, str, str]:
+    subject = str(profile.get("sub") or profile.get("id") or profile.get("user_id") or "").strip()
+    nickname = str(profile.get("preferred_username") or profile.get("nickname") or profile.get("name") or profile.get("username") or "").strip()
+    avatar = str(profile.get("picture") or profile.get("avatar") or "").strip()
+    email = normalize_email(profile.get("email") or "")
+    return subject, nickname, avatar, email
+
+
+def safe_oauth_username(conn: sqlite3.Connection, preferred: str, subject: str, provider_label: str = "栖岛用户") -> str:
+    base = re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff-]+", "", preferred or "")[:20] or f"{provider_label}{subject[-6:]}"
     name = base
     idx = 1
     while conn.execute("SELECT 1 FROM users WHERE username=?", (name,)).fetchone():
@@ -1803,13 +1822,16 @@ def safe_oauth_username(conn: sqlite3.Connection, preferred: str, subject: str) 
     return name
 
 
-def finish_qidao_login(conn: sqlite3.Connection, profile: dict[str, Any], token_data: dict[str, Any], request: Request) -> tuple[str, sqlite3.Row]:
-    subject, nickname, avatar, email = qidao_user_fields(profile)
+def finish_oauth_login(conn: sqlite3.Connection, *, provider: str, provider_label: str, profile: dict[str, Any], token_data: dict[str, Any], request: Request) -> tuple[str, sqlite3.Row]:
+    if provider == "connect":
+        subject, nickname, avatar, email = connect_user_fields(profile)
+    else:
+        subject, nickname, avatar, email = qidao_user_fields(profile)
     if not subject:
-        raise HTTPException(status_code=400, detail="栖岛用户信息缺少 UID")
+        raise HTTPException(status_code=400, detail=f"{provider_label} 用户信息缺少 UID")
     now_text = now()
     ip = client_ip(request)
-    identity = conn.execute("SELECT * FROM oauth_identities WHERE provider='qidao' AND subject=?", (subject,)).fetchone()
+    identity = conn.execute("SELECT * FROM oauth_identities WHERE provider=? AND subject=?", (provider, subject)).fetchone()
     if identity:
         user = conn.execute("SELECT * FROM users WHERE id=? AND COALESCE(deleted_at,'')=''", (identity["user_id"],)).fetchone()
         if not user:
@@ -1817,20 +1839,20 @@ def finish_qidao_login(conn: sqlite3.Connection, profile: dict[str, Any], token_
     else:
         user = conn.execute("SELECT * FROM users WHERE email=? AND ?<>'' AND COALESCE(deleted_at,'')=''", (email, email)).fetchone()
         if not user:
-            username = safe_oauth_username(conn, nickname, subject)
+            username = safe_oauth_username(conn, nickname, subject, provider_label)
             cur = conn.execute(
                 "INSERT INTO users(username,email,password_hash,role,avatar,bio,created_at,register_ip,last_login_ip) VALUES(?,?,?,?,?,?,?,?,?)",
                 (username, email or None, hash_password(secrets.token_urlsafe(24)), "user", avatar or current_default_avatar(conn), "", now_text, ip, ip),
             )
             user = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
         conn.execute(
-            "INSERT INTO oauth_identities(provider,subject,user_id,created_at,updated_at) VALUES('qidao',?,?,?,?)",
-            (subject, user["id"], now_text, now_text),
+            "INSERT INTO oauth_identities(provider,subject,user_id,created_at,updated_at) VALUES(?,?,?,?,?)",
+            (provider, subject, user["id"], now_text, now_text),
         )
     ensure_account_active(conn, user)
     conn.execute(
-        "UPDATE oauth_identities SET raw_profile=?, access_token=?, refresh_token=?, updated_at=? WHERE provider='qidao' AND subject=?",
-        (json.dumps(profile, ensure_ascii=False)[:8000], str(token_data.get("access_token") or ""), str(token_data.get("refresh_token") or ""), now_text, subject),
+        "UPDATE oauth_identities SET raw_profile=?, access_token=?, refresh_token=?, updated_at=? WHERE provider=? AND subject=?",
+        (json.dumps(profile, ensure_ascii=False)[:8000], str(token_data.get("access_token") or ""), str(token_data.get("refresh_token") or ""), now_text, provider, subject),
     )
     if avatar and not (user["avatar"] or ""):
         conn.execute("UPDATE users SET avatar=? WHERE id=?", (avatar, user["id"]))
@@ -1838,6 +1860,14 @@ def finish_qidao_login(conn: sqlite3.Connection, profile: dict[str, Any], token_
     token = secrets.token_urlsafe(32)
     conn.execute("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)", (token, user["id"], now_text))
     return token, conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+
+
+def finish_qidao_login(conn: sqlite3.Connection, profile: dict[str, Any], token_data: dict[str, Any], request: Request) -> tuple[str, sqlite3.Row]:
+    return finish_oauth_login(conn, provider="qidao", provider_label="栖岛用户", profile=profile, token_data=token_data, request=request)
+
+
+def finish_connect_login(conn: sqlite3.Connection, profile: dict[str, Any], token_data: dict[str, Any], request: Request) -> tuple[str, sqlite3.Row]:
+    return finish_oauth_login(conn, provider="connect", provider_label="Connect用户", profile=profile, token_data=token_data, request=request)
 
 
 def send_smtp_mail(settings: dict[str, Any], to_email: str, subject: str, body: str) -> None:
@@ -2106,6 +2136,22 @@ localStorage.setItem('yhdet_user', JSON.stringify({safe_user}));
 location.replace({safe_next});
 </script><p>登录成功，正在返回...</p>"""
     return HTMLResponse(html_body)
+
+
+@app.get("/api/oauth/connect/start")
+def connect_oauth_start_disabled():
+    raise HTTPException(
+        status_code=410,
+        detail="泓聊 Connect 是给第三方网站接入的登录提供方；泓社区自身请使用本地账号登录。第三方网站应跳转到 https://connect.ccocc.cyou/oauth/authorize。",
+    )
+
+
+@app.get("/api/oauth/connect/callback")
+def connect_oauth_callback_disabled():
+    raise HTTPException(
+        status_code=410,
+        detail="泓社区不再作为 Connect 消费端。第三方网站请在自己的站点实现 callback，并调用 https://connect.ccocc.cyou/api/oauth/token 与 /api/oauth/userinfo。",
+    )
 
 
 @app.get("/api/me/notifications")
@@ -3526,6 +3572,72 @@ def admin_overview(authorization: str | None = Header(default=None)):
         "pending_market_orders": [{"id": o["id"], "status": o["status"], "created_at": o["created_at"], "username": o["username"], "item_title": o["item_title"], "price": o["price"], "cost_points": o["cost_points"]} for o in pending_market_orders],
         "recent_posts": [post_row_to_dict(r) for r in recent_posts],
         "recent_users": [public_user(u) for u in recent_users],
+    }
+
+
+@app.get("/api/admin/risk")
+def admin_risk(authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        stats = {
+            "open_reports": conn.execute("SELECT COUNT(*) FROM content_reports WHERE status IN ('open','reviewing')").fetchone()[0],
+            "pending_market_orders": conn.execute("SELECT COUNT(*) FROM market_orders WHERE status IN ('PENDING','PENDING_AUDIT')").fetchone()[0],
+            "frozen_users": conn.execute("SELECT COUNT(*) FROM users WHERE account_status='frozen' AND COALESCE(deleted_at,'')=''").fetchone()[0],
+            "banned_users": conn.execute("SELECT COUNT(*) FROM users WHERE account_status='banned' AND COALESCE(deleted_at,'')=''").fetchone()[0],
+            "new_users_24h": conn.execute("SELECT COUNT(*) FROM users WHERE COALESCE(deleted_at,'')='' AND datetime(created_at) >= datetime('now','-1 day')").fetchone()[0],
+            "posts_24h": conn.execute("SELECT COUNT(*) FROM posts WHERE datetime(created_at) >= datetime('now','-1 day')").fetchone()[0],
+            "comments_24h": conn.execute("SELECT COUNT(*) FROM comments WHERE COALESCE(deleted_at,'')='' AND datetime(created_at) >= datetime('now','-1 day')").fetchone()[0],
+            "sessions_24h": conn.execute("SELECT COUNT(*) FROM sessions WHERE datetime(created_at) >= datetime('now','-1 day')").fetchone()[0],
+        }
+        multi_ip = conn.execute("""
+            SELECT register_ip AS ip, COUNT(*) AS user_count, GROUP_CONCAT(username, '、') AS usernames, MAX(created_at) AS last_seen
+            FROM users
+            WHERE COALESCE(deleted_at,'')='' AND COALESCE(register_ip,'')<>''
+            GROUP BY register_ip HAVING COUNT(*) >= 2
+            ORDER BY user_count DESC, last_seen DESC LIMIT 20
+        """).fetchall()
+        active_users = conn.execute("""
+            SELECT u.id, u.username, u.role, u.account_status, u.register_ip, u.last_login_ip, u.created_at,
+                   (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.id AND datetime(p.created_at) >= datetime('now','-7 day')) AS posts_7d,
+                   (SELECT COUNT(*) FROM comments c WHERE c.user_id=u.id AND COALESCE(c.deleted_at,'')='' AND datetime(c.created_at) >= datetime('now','-7 day')) AS comments_7d,
+                   (SELECT COUNT(*) FROM content_reports r WHERE r.reporter_id=u.id AND datetime(r.created_at) >= datetime('now','-30 day')) AS reports_made_30d,
+                   (SELECT COUNT(*) FROM content_reports r LEFT JOIN posts p ON r.target_type='post' AND p.id=r.target_id LEFT JOIN comments c ON r.target_type='comment' AND c.id=r.target_id WHERE (p.user_id=u.id OR c.user_id=u.id) AND r.status IN ('open','reviewing')) AS open_reports_against
+            FROM users u
+            WHERE COALESCE(u.deleted_at,'')=''
+            ORDER BY (posts_7d + comments_7d + open_reports_against * 5) DESC, u.id DESC LIMIT 30
+        """).fetchall()
+        report_targets = conn.execute("""
+            SELECT r.target_type, r.target_id, COUNT(*) AS report_count, MAX(r.created_at) AS last_report_at,
+                   COALESCE(p.title, cp.title, '') AS post_title,
+                   COALESCE(pu.username, cu.username, '') AS target_author
+            FROM content_reports r
+            LEFT JOIN posts p ON r.target_type='post' AND p.id=r.target_id
+            LEFT JOIN comments c ON r.target_type='comment' AND c.id=r.target_id
+            LEFT JOIN posts cp ON r.target_type='comment' AND cp.id=c.post_id
+            LEFT JOIN users pu ON pu.id=p.user_id
+            LEFT JOIN users cu ON cu.id=c.user_id
+            WHERE r.status IN ('open','reviewing')
+            GROUP BY r.target_type, r.target_id
+            ORDER BY report_count DESC, last_report_at DESC LIMIT 20
+        """).fetchall()
+        new_users = conn.execute("""
+            SELECT id, username, email, role, account_status, register_ip, last_login_ip, created_at
+            FROM users WHERE COALESCE(deleted_at,'')='' ORDER BY id DESC LIMIT 20
+        """).fetchall()
+        pending_orders = conn.execute("""
+            SELECT o.id, o.status, o.created_at, o.cost_points, o.price, u.username, mi.title AS item_title
+            FROM market_orders o JOIN users u ON u.id=o.user_id JOIN market_items mi ON mi.id=o.item_id
+            WHERE o.status IN ('PENDING','PENDING_AUDIT') ORDER BY o.id DESC LIMIT 20
+        """).fetchall()
+        banned = conn.execute("SELECT * FROM banned_identities ORDER BY id DESC LIMIT 20").fetchall()
+    return {
+        "stats": stats,
+        "multi_ip": [{"ip": r["ip"], "user_count": r["user_count"], "usernames": r["usernames"], "last_seen": r["last_seen"]} for r in multi_ip],
+        "active_users": [{"id": r["id"], "username": r["username"], "role": r["role"], "account_status": r["account_status"], "register_ip": r["register_ip"], "last_login_ip": r["last_login_ip"], "created_at": r["created_at"], "posts_7d": r["posts_7d"], "comments_7d": r["comments_7d"], "reports_made_30d": r["reports_made_30d"], "open_reports_against": r["open_reports_against"]} for r in active_users],
+        "report_targets": [{"target_type": r["target_type"], "target_id": r["target_id"], "report_count": r["report_count"], "last_report_at": r["last_report_at"], "post_title": r["post_title"], "target_author": r["target_author"]} for r in report_targets],
+        "new_users": [{"id": r["id"], "username": r["username"], "email": r["email"], "role": r["role"], "account_status": r["account_status"], "register_ip": r["register_ip"], "last_login_ip": r["last_login_ip"], "created_at": r["created_at"]} for r in new_users],
+        "pending_orders": [{"id": r["id"], "status": r["status"], "created_at": r["created_at"], "cost_points": r["cost_points"], "price": r["price"], "username": r["username"], "item_title": r["item_title"]} for r in pending_orders],
+        "banned": [{"id": r["id"], "user_id": r["user_id"], "username": r["username"], "email": r["email"], "ip": r["ip"], "reason": r["reason"], "banned_at": r["banned_at"]} for r in banned],
     }
 
 
