@@ -709,7 +709,7 @@ function AuthPage({ mode, setMe, site = defaultSite }) {
         {site.captcha_enabled && <CaptchaBox value={form.captcha} captchaId={form.captcha_id} onChange={captcha => setForm({ ...form, captcha })} onChallenge={captcha_id => setForm(f => ({ ...f, captcha_id, captcha: '' }))} />}
         <button type="submit" className="btn btn-primary auth-submit" disabled={loading}>{loading ? '提交中...' : (isLogin ? '登录' : '注册')}</button>
       </form>
-      {site.qidao_oauth_enabled && <div className="oauth-login"><div className="oauth-divider"><span>或使用第三方登录</span></div><a className="btn btn-secondary qidao-login" href={`/api/oauth/qidao/start?next=${encodeURIComponent('/')}`}><i className="fas fa-island-tropical" /> 栖岛账号登录</a></div>}
+      {site.qidao_oauth_enabled && <div className="oauth-login"><div className="oauth-divider"><span>或使用第三方登录</span></div><a className="btn btn-secondary qidao-login" href={`/api/oauth/qidao/start?next=${encodeURIComponent('/')}`}><i className="fas fa-location-dot" /> 使用栖岛登录</a></div>}
       <div className={isLogin ? 'login-footer' : 'register-footer'}>{isLogin ? <>没有账号？<a href="/register">立即注册</a></> : <>已有账号？<a href="/login">立即登录</a></>}</div>
     </div>
     <div className="sticker"><img src="/static/sticker.png" alt="" loading="lazy" decoding="async" onError={e => { e.currentTarget.style.display = 'none' }} /></div>
@@ -1494,6 +1494,7 @@ function SimpleSection({ type }) {
 function AdminPage({ me }) {
   const tabs = [
     ['overview', '总览', 'fa-chart-line'],
+    ['risk', '风控', 'fa-shield-virus'],
     ['posts', '帖子', 'fa-file-lines'],
     ['comments', '评论', 'fa-comments'],
     ['reports', '举报', 'fa-flag'],
@@ -1542,10 +1543,11 @@ function AdminPage({ me }) {
       <div><h1><i className="fas fa-shield-halved" /> 管理后台</h1><p>内容、用户、公告和捐赠记录统一管理</p></div>
       <a className="btn btn-secondary" href="/"><i className="fas fa-arrow-left" /> 返回前台</a>
     </div>
-    <div className="admin-tabs">{tabs.map(t => <button key={t[0]} className={`admin-tab ${tab === t[0] ? 'active' : ''}`} onClick={() => { setTab(t[0]); setQ('') }}><i className={`fas ${t[2]}`} /> {t[1]}</button>)}</div>
+    <div className="admin-tabs">{tabs.map(t => <button key={t[0]} data-tab={t[0]} className={`admin-tab ${tab === t[0] ? 'active' : ''}`} onClick={() => { setTab(t[0]); setQ('') }}><i className={`fas ${t[2]}`} /> {t[1]}</button>)}</div>
     {err && <div className="alert alert-error">{err}</div>}
     {busy && <div className="admin-busy">正在处理...</div>}
     {tab === 'overview' && <AdminOverview data={data.overview} />}
+    {tab === 'risk' && <AdminRisk data={data.risk} />}
     {['posts', 'comments', 'users'].includes(tab) && <div className="admin-toolbar"><input className="form-input" placeholder="搜索标题、用户或内容" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') load(tab, q) }} /><button className="btn btn-primary" onClick={() => load(tab, q)}><i className="fas fa-search" /> 搜索</button></div>}
     {tab === 'posts' && <AdminPosts items={items} run={run} />}
     {tab === 'comments' && <AdminComments items={items} run={run} />}
@@ -1572,12 +1574,39 @@ function AdminOverview({ data }) {
     <div className="admin-stat-grid">
       <div className="admin-stat"><span>访问</span><b>{stats.visits || 0}</b></div><div className="admin-stat"><span>用户</span><b>{stats.users || 0}</b></div><div className="admin-stat"><span>帖子</span><b>{stats.posts || 0}</b></div><div className="admin-stat"><span>评论</span><b>{stats.comments || 0}</b></div>
     </div>
-    <div className="admin-todo-grid">{todoCards.map(([label,value,icon,target]) => <button key={label} className={`admin-todo-card ${value ? 'needs-attention' : ''}`} onClick={() => document.querySelector(`.admin-tab:nth-child(${target === 'reports' ? 4 : target === 'market' ? 9 : 5})`)?.click()}><span><i className={`fas ${icon}`} /> {label}</span><b>{value}</b><small>{value ? '需要处理' : '暂无待办'}</small></button>)}</div>
+    <div className="admin-todo-grid">{todoCards.map(([label,value,icon,target]) => <button key={label} className={`admin-todo-card ${value ? 'needs-attention' : ''}`} onClick={() => document.querySelector(`.admin-tab[data-tab="${target}"]`)?.click()}><span><i className={`fas ${icon}`} /> {label}</span><b>{value}</b><small>{value ? '需要处理' : '暂无待办'}</small></button>)}</div>
     <div className="admin-grid governance-grid">
-      <div className="admin-card"><h3><i className="fas fa-flag" /> 最近举报</h3>{data?.recent_reports?.length ? data.recent_reports.map(r => <div className="admin-line report-overview-line" key={r.id}><span><b>{r.target_type === 'post' ? '帖子' : '评论'} #{r.id}</b><small>{r.reason} · {r.reporter} · {relativeTime(r.created_at)}</small></span><a href="/admin" onClick={e => { e.preventDefault(); document.querySelector('.admin-tab:nth-child(4)')?.click() }}>处理</a></div>) : <div className="empty-state small-empty"><i className="fas fa-shield-check" /><p>暂无待处理举报</p></div>}</div>
-      <div className="admin-card"><h3><i className="fas fa-store" /> 市场待办</h3>{data?.pending_market_orders?.length ? data.pending_market_orders.map(o => <div className="admin-line" key={o.id}><span><b>{o.item_title}</b><small>{o.username} · {orderStatusText(o.status)} · {relativeTime(o.created_at)}</small></span><a href="/admin" onClick={e => { e.preventDefault(); document.querySelector('.admin-tab:nth-child(9)')?.click() }}>处理</a></div>) : <div className="empty-state small-empty"><i className="fas fa-circle-check" /><p>暂无市场待办</p></div>}</div>
+      <div className="admin-card"><h3><i className="fas fa-flag" /> 最近举报</h3>{data?.recent_reports?.length ? data.recent_reports.map(r => <div className="admin-line report-overview-line" key={r.id}><span><b>{r.target_type === 'post' ? '帖子' : '评论'} #{r.id}</b><small>{r.reason} · {r.reporter} · {relativeTime(r.created_at)}</small></span><a href="/admin" onClick={e => { e.preventDefault(); document.querySelector('.admin-tab[data-tab="reports"]')?.click() }}>处理</a></div>) : <div className="empty-state small-empty"><i className="fas fa-shield-check" /><p>暂无待处理举报</p></div>}</div>
+      <div className="admin-card"><h3><i className="fas fa-store" /> 市场待办</h3>{data?.pending_market_orders?.length ? data.pending_market_orders.map(o => <div className="admin-line" key={o.id}><span><b>{o.item_title}</b><small>{o.username} · {orderStatusText(o.status)} · {relativeTime(o.created_at)}</small></span><a href="/admin" onClick={e => { e.preventDefault(); document.querySelector('.admin-tab[data-tab="market"]')?.click() }}>处理</a></div>) : <div className="empty-state small-empty"><i className="fas fa-circle-check" /><p>暂无市场待办</p></div>}</div>
       <div className="admin-card"><h3>最新帖子</h3>{data?.recent_posts?.map(p => <div className="admin-line" key={p.id}><span>{p.title}</span><a href={`/post/${p.id}`}>查看</a></div>)}</div>
       <div className="admin-card"><h3>新用户</h3>{data?.recent_users?.map(u => <div className="admin-line" key={u.id}><span>{u.username}</span><span>{u.role === 'admin' ? '管理员' : '用户'}</span></div>)}</div>
+    </div>
+  </>
+}
+
+function AdminRisk({ data }) {
+  const stats = data?.stats || {}
+  const statCards = [
+    ['待处理举报', stats.open_reports || 0, 'fa-flag'],
+    ['待审核订单', stats.pending_market_orders || 0, 'fa-store'],
+    ['24h 新用户', stats.new_users_24h || 0, 'fa-user-plus'],
+    ['24h 内容', (stats.posts_24h || 0) + (stats.comments_24h || 0), 'fa-comments'],
+    ['冻结用户', stats.frozen_users || 0, 'fa-snowflake'],
+    ['封禁用户', stats.banned_users || 0, 'fa-ban'],
+  ]
+  return <>
+    <div className="admin-risk-head">
+      <div><h2><i className="fas fa-shield-virus" /> 治理 / 风控中心</h2><p>集中查看待办、异常 IP、活跃账号、举报目标和封禁记录。</p></div>
+      <div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => document.querySelector('.admin-tab[data-tab="reports"]')?.click()}>处理举报</button><button className="btn btn-sm btn-secondary" onClick={() => document.querySelector('.admin-tab[data-tab="users"]')?.click()}>用户管理</button></div>
+    </div>
+    <div className="admin-stat-grid risk-stat-grid">{statCards.map(([label,value,icon]) => <div className={`admin-stat risk-stat ${value ? 'has-risk' : ''}`} key={label}><span><i className={`fas ${icon}`} /> {label}</span><b>{value}</b></div>)}</div>
+    <div className="admin-grid governance-grid risk-grid">
+      <div className="admin-card"><h3><i className="fas fa-network-wired" /> 多账号注册 IP</h3>{data?.multi_ip?.length ? data.multi_ip.map(x => <div className="admin-line risk-line" key={x.ip}><span><b>{x.ip}</b><small>{x.usernames} · {x.user_count} 个账号 · 最近 {relativeTime(x.last_seen)}</small></span></div>) : <div className="empty-state small-empty"><i className="fas fa-circle-check" /><p>暂无重复注册 IP</p></div>}</div>
+      <div className="admin-card"><h3><i className="fas fa-bolt" /> 高活跃 / 高风险账号</h3>{data?.active_users?.map(u => <div className="admin-line risk-line" key={u.id}><span><b>{u.username} <em>{u.account_status || 'active'}</em></b><small>7天帖子 {u.posts_7d} · 评论 {u.comments_7d} · 被举报 {u.open_reports_against} · IP {u.register_ip || '-'}</small></span><a href={`/user/${u.id}`}>主页</a></div>)}</div>
+      <div className="admin-card"><h3><i className="fas fa-flag" /> 被举报目标</h3>{data?.report_targets?.length ? data.report_targets.map(r => <div className="admin-line risk-line" key={`${r.target_type}-${r.target_id}`}><span><b>{r.target_type === 'post' ? '帖子' : '评论'} #{r.target_id} · {r.report_count} 次</b><small>{r.target_author || '未知作者'} · {r.post_title || '未知帖子'} · {relativeTime(r.last_report_at)}</small></span><button className="btn btn-sm btn-secondary" onClick={() => document.querySelector('.admin-tab[data-tab="reports"]')?.click()}>处理</button></div>) : <div className="empty-state small-empty"><i className="fas fa-shield-check" /><p>暂无待处理举报目标</p></div>}</div>
+      <div className="admin-card"><h3><i className="fas fa-user-clock" /> 最新注册</h3>{data?.new_users?.map(u => <div className="admin-line risk-line" key={u.id}><span><b>{u.username}</b><small>{u.email || '无邮箱'} · {relativeTime(u.created_at)} · 注册IP {u.register_ip || '-'}</small></span><a href={`/user/${u.id}`}>查看</a></div>)}</div>
+      <div className="admin-card"><h3><i className="fas fa-store" /> 市场待处理</h3>{data?.pending_orders?.length ? data.pending_orders.map(o => <div className="admin-line risk-line" key={o.id}><span><b>{o.username} · {o.item_title}</b><small>{orderStatusText(o.status)} · {o.cost_points || o.price || 0} 泓币 · {relativeTime(o.created_at)}</small></span><button className="btn btn-sm btn-secondary" onClick={() => document.querySelector('.admin-tab[data-tab="market"]')?.click()}>处理</button></div>) : <div className="empty-state small-empty"><i className="fas fa-circle-check" /><p>暂无市场待处理</p></div>}</div>
+      <div className="admin-card"><h3><i className="fas fa-ban" /> 封禁留档</h3>{data?.banned?.length ? data.banned.map(b => <div className="admin-line risk-line" key={b.id}><span><b>{b.username || b.email || b.ip}</b><small>{b.reason || '无原因'} · {relativeTime(b.banned_at)}</small></span></div>) : <div className="empty-state small-empty"><i className="fas fa-circle-check" /><p>暂无封禁记录</p></div>}</div>
     </div>
   </>
 }
