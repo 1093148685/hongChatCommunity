@@ -1906,6 +1906,100 @@ function formatPlayerTime(seconds = 0) {
   const s = String(n % 60).padStart(2, '0')
   return `${m}:${s}`
 }
+const MUSIC_RECENT_KEY = 'yhdet_music_recent_v1'
+const MUSIC_FAVORITE_KEY = 'yhdet_music_favorites_v1'
+const MUSIC_VOLUME_KEY = 'yhdet_music_volume_v1'
+
+function normalizeSongKey(song = {}) {
+  return `${song.source || ''}:${song.id || ''}`
+}
+function isImageUrl(value = '') {
+  return /^https?:\/\//.test(String(value || ''))
+}
+function getSongSubtitle(song = {}) {
+  return [song.artist || '未知歌手', song.album && !isImageUrl(song.album) ? song.album : '', song.source || '音乐来源'].filter(Boolean).join(' · ')
+}
+function dedupeSongs(prev = [], next = []) {
+  const seen = new Set(prev.map(normalizeSongKey))
+  const out = [...prev]
+  next.forEach(song => {
+    const key = normalizeSongKey(song)
+    if (!seen.has(key)) { seen.add(key); out.push(song) }
+  })
+  return out
+}
+function readMusicStorage(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback }
+}
+function writeMusicStorage(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch {}
+}
+
+function MusicSearchOverlay({ open, anchorRef, query, results, searching, hasMore, currentKey, loadingSongKey, onPlay, onQueue, onScrollBottom, onClose }) {
+  const overlayRef = useRef(null)
+  const [style, setStyle] = useState({})
+  const [mobile, setMobile] = useState(false)
+  useEffect(() => {
+    if (!open) return
+    function place() {
+      const isMobile = window.matchMedia('(max-width: 760px)').matches
+      setMobile(isMobile)
+      if (isMobile) {
+        setStyle({})
+        return
+      }
+      const rect = anchorRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const gap = 8
+      const maxHeight = Math.max(240, Math.min(430, window.innerHeight - rect.bottom - 18))
+      setStyle({ left: `${Math.max(12, rect.left)}px`, top: `${rect.bottom + gap}px`, width: `${Math.min(rect.width, window.innerWidth - 24)}px`, maxHeight: `${maxHeight}px` })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => { window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true) }
+  }, [open, anchorRef, query, results.length])
+  useEffect(() => {
+    if (!open) return
+    function onKey(e) { if (e.key === 'Escape') onClose?.() }
+    function onPointer(e) {
+      if (overlayRef.current?.contains(e.target) || anchorRef.current?.contains(e.target)) return
+      onClose?.()
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onPointer)
+    return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onPointer) }
+  }, [open, onClose, anchorRef])
+  if (!open || !query.trim()) return null
+  return createPortal(<div className={`music-search-overlay ${mobile ? 'is-mobile' : ''}`} style={style} ref={overlayRef}>
+    {mobile && <div className="music-overlay-head"><span>搜索结果</span><button type="button" onClick={onClose} aria-label="关闭搜索结果"><i className="fas fa-xmark" /></button></div>}
+    <div className="music-result-scroll" onScroll={e => {
+      const el = e.currentTarget
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 28) onScrollBottom?.()
+    }}>
+      {searching && !results.length && <div className="music-result-skeleton"><span /><span /><span /></div>}
+      {!searching && !results.length && <div className="music-empty-inline"><i className="fas fa-magnifying-glass" /> 暂无匹配歌曲，换个关键词试试</div>}
+      {results.map(song => {
+        const key = normalizeSongKey(song)
+        const isCurrent = key === currentKey
+        const isLoading = key === loadingSongKey
+        return <div className={`music-result-row ${isCurrent ? 'is-current' : ''}`} key={key}>
+          <button type="button" className="music-result-main" onClick={() => onPlay(song)}>
+            <span className="music-result-cover">{isImageUrl(song.album) ? <img src={song.album} alt="" loading="lazy" decoding="async" /> : <i className="fas fa-music" />}</span>
+            <span className="music-result-text"><b>{song.name}</b><small>{getSongSubtitle(song)}</small></span>
+          </button>
+          <span className="music-result-actions">
+            {isCurrent && <em>播放中</em>}
+            <button type="button" title="播放" aria-label="播放" onClick={() => onPlay(song)}>{isLoading ? <i className="fas fa-spinner fa-spin" /> : <i className="fas fa-play" />}</button>
+            <button type="button" title="加入队列" aria-label="加入队列" onClick={() => onQueue(song)}><i className="fas fa-plus" /></button>
+          </span>
+        </div>
+      })}
+      {results.length > 0 && <div className="music-load-more">{searching ? '加载中...' : hasMore ? '继续下滑加载更多' : '已经到底了'}</div>}
+    </div>
+  </div>, document.body)
+}
+
 function MusicPage() {
   const [info, setInfo] = useState(null)
   const [query, setQuery] = useState('')
@@ -1916,26 +2010,39 @@ function MusicPage() {
   const [searching, setSearching] = useState(false)
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [err, setErr] = useState('')
+  const [playerError, setPlayerError] = useState('')
   const [current, setCurrent] = useState(null)
   const [lyrics, setLyrics] = useState([])
   const [lyricIndex, setLyricIndex] = useState(-1)
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
-  const [isPlaying, setIsPlaying] = useState(false)
-  const [liked, setLiked] = useState(false)
-  const [volume, setVolume] = useState(0.72)
+  const [playerState, setPlayerState] = useState('idle')
+  const [favoriteKeys, setFavoriteKeys] = useState(() => readMusicStorage(MUSIC_FAVORITE_KEY, []))
+  const [volume, setVolume] = useState(() => Number(readMusicStorage(MUSIC_VOLUME_KEY, 0.72) || 0.72))
   const [playMode, setPlayMode] = useState('list')
+  const [queue, setQueue] = useState([])
+  const [queueIndex, setQueueIndex] = useState(-1)
+  const [recentSongs, setRecentSongs] = useState(() => readMusicStorage(MUSIC_RECENT_KEY, []))
+  const [loadingSongKey, setLoadingSongKey] = useState('')
   const audioRef = useRef(null)
   const lyricBoxRef = useRef(null)
   const searchSeqRef = useRef(0)
+  const playSeqRef = useRef(0)
   const searchTimerRef = useRef(null)
+  const searchAnchorRef = useRef(null)
+  const currentKey = current ? normalizeSongKey(current) : ''
+  const isPlaying = playerState === 'playing'
+
   useEffect(() => { document.title = '音乐 - 泓聊社区'; api('/api/music').then(d => { setInfo(d); setSourceId(String(d?.config?.default_source || d?.sources?.[0]?.id || '')) }).catch(e => setErr(e.message)) }, [])
-  useEffect(() => { if (audioRef.current) audioRef.current.volume = volume }, [volume])
+  useEffect(() => { if (audioRef.current) audioRef.current.volume = volume; writeMusicStorage(MUSIC_VOLUME_KEY, volume) }, [volume])
+  useEffect(() => { writeMusicStorage(MUSIC_FAVORITE_KEY, favoriteKeys) }, [favoriteKeys])
+  useEffect(() => { writeMusicStorage(MUSIC_RECENT_KEY, recentSongs) }, [recentSongs])
   useEffect(() => {
     const box = lyricBoxRef.current
     const active = box?.querySelector('.music-lyric-line.active')
-    if (box && active) active.scrollIntoView({ block:'center', behavior:'smooth' })
+    if (box && active) requestAnimationFrame(() => active.scrollIntoView({ block:'center', behavior:'smooth' }))
   }, [lyricIndex])
+
   async function runMusicSearch(term, nextPage = 1, append = false, sourceOverride = '') {
     const q = term.trim()
     if (!q) { setResults([]); setErr(''); setHasMore(false); return }
@@ -1948,7 +2055,7 @@ function MusicPage() {
       if (!res.ok) throw new Error(json.detail || '搜索失败')
       if (seq !== searchSeqRef.current) return
       const items = json.items || []
-      setResults(prev => append ? [...prev, ...items.filter(x => !prev.some(p => p.id === x.id && p.source === x.source))] : items)
+      setResults(prev => append ? dedupeSongs(prev, items) : items)
       setPage(nextPage)
       setHasMore(Boolean(json.has_more))
     } catch(e) { if (seq === searchSeqRef.current) setErr(e.message) }
@@ -1960,7 +2067,7 @@ function MusicPage() {
     setPopoverOpen(Boolean(value.trim()))
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
     if (!value.trim()) { setResults([]); setErr(''); setHasMore(false); return }
-    searchTimerRef.current = setTimeout(() => runMusicSearch(value, 1, false), 320)
+    searchTimerRef.current = setTimeout(() => runMusicSearch(value, 1, false), 260)
   }
   function submitMusicSearch(e) {
     e?.preventDefault?.()
@@ -1971,26 +2078,45 @@ function MusicPage() {
     if (searching || !hasMore || !query.trim()) return
     await runMusicSearch(query, page + 1, true)
   }
-  function handleResultScroll(e) {
-    const el = e.currentTarget
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 24) loadMore()
+  function addToQueue(song, silent = false) {
+    setQueue(prev => dedupeSongs(prev, [song]))
+    if (!silent) notify('已加入播放队列', 'success')
   }
-  async function playSong(song) {
-    setErr('')
+  async function playSong(song, opts = {}) {
+    const seq = ++playSeqRef.current
+    const songKey = normalizeSongKey(song)
+    setPlayerError('')
+    setLoadingSongKey(songKey)
+    setPlayerState('resolving')
+    let targetIndex = Number.isInteger(opts.queueIndex) ? opts.queueIndex : -1
+    if (targetIndex < 0) {
+      const existing = queue.findIndex(x => normalizeSongKey(x) === songKey)
+      const nextQueue = existing >= 0 ? queue : [...queue, song]
+      targetIndex = existing >= 0 ? existing : nextQueue.length - 1
+      setQueue(nextQueue)
+    }
+    setQueueIndex(targetIndex)
     try {
       const activeSource = sourceId || song.source || info?.config?.default_source || ''
       const urlRes = await api(`/api/music/url?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(activeSource)}`)
+      if (seq !== playSeqRef.current) return
       const next = { ...song, source: song.source || activeSource, url:urlRes.url }
       setCurrent(next)
-      setLiked(false)
       setCurrentTime(0); setDuration(0); setLyricIndex(-1)
+      setLyrics([])
+      setRecentSongs(prev => dedupeSongs([next], prev).slice(0, 30))
       try {
         const lyr = await api(`/api/music/lyric?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(activeSource)}`)
-        setLyrics(parseLyrics(lyr.lyric || lyr.tlyric || ''))
-      } catch { setLyrics([]) }
-      setTimeout(() => audioRef.current?.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false)), 80)
+        if (seq === playSeqRef.current) setLyrics(parseLyrics(lyr.lyric || lyr.tlyric || ''))
+      } catch { if (seq === playSeqRef.current) setLyrics([]) }
+      if (seq !== playSeqRef.current) return
+      setTimeout(() => audioRef.current?.play().then(() => setPlayerState('playing')).catch(() => setPlayerState('paused')), 60)
       api('/api/music/log', { method:'POST', body:JSON.stringify({ action:'play', songName:song.name, songId:song.id, source:song.source, status:'success' }) }).catch(()=>{})
-    } catch(e) { setErr(e.message); setIsPlaying(false); notify(e.message, 'error') }
+    } catch(e) {
+      if (seq === playSeqRef.current) { setPlayerError(e.message); setPlayerState('error'); notify(e.message, 'error') }
+    } finally {
+      if (seq === playSeqRef.current) setLoadingSongKey('')
+    }
   }
   function onTimeUpdate() {
     const a = audioRef.current
@@ -2002,72 +2128,94 @@ function MusicPage() {
       if (lyrics[i].time <= t) idx = i
       else break
     }
-    setLyricIndex(idx)
+    if (idx !== lyricIndex) setLyricIndex(idx)
   }
   function togglePlay() {
     const a = audioRef.current
-    if (!a || !current?.url) return
-    if (a.paused) a.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false))
-    else { a.pause(); setIsPlaying(false) }
+    if (!a || !current?.url || playerState === 'resolving') return
+    if (a.paused) a.play().then(() => setPlayerState('playing')).catch(() => setPlayerState('paused'))
+    else { a.pause(); setPlayerState('paused') }
   }
   function seekTo(value) {
     const a = audioRef.current
     const next = Number(value || 0)
     if (a && duration) { a.currentTime = next; setCurrentTime(next) }
   }
+  function playQueueIndex(index) {
+    const next = queue[index]
+    if (next) playSong(next, { queueIndex:index })
+  }
   function playSibling(step = 1) {
-    if (!results.length) return
-    const idx = results.findIndex(x => current && x.id === current.id && x.source === current.source)
-    if (idx < 0) return playSong(results[0])
-    const next = results[(idx + step + results.length) % results.length]
-    if (next) playSong(next)
+    if (!queue.length) return
+    const base = queueIndex >= 0 ? queueIndex : queue.findIndex(x => normalizeSongKey(x) === currentKey)
+    const nextIndex = base < 0 ? 0 : (base + step + queue.length) % queue.length
+    playQueueIndex(nextIndex)
   }
   function handleEnded() {
+    if (!audioRef.current) return
     if (playMode === 'single') { audioRef.current.currentTime = 0; audioRef.current.play().catch(() => {}) }
-    else if (playMode === 'random' && results.length) playSong(results[Math.floor(Math.random() * results.length)])
+    else if (playMode === 'random' && queue.length) playQueueIndex(Math.floor(Math.random() * queue.length))
     else playSibling(1)
   }
+  function toggleFavorite() {
+    if (!current) return
+    const key = normalizeSongKey(current)
+    setFavoriteKeys(prev => prev.includes(key) ? prev.filter(x => x !== key) : [...prev, key])
+    notify(favoriteKeys.includes(key) ? '已取消收藏' : '已收藏到本机', 'success')
+  }
   const sourceName = info?.sources?.find(x => String(x.id) === String(sourceId))?.name || current?.source || info?.config?.default_source_name || '音乐接口'
-  const isCoverUrl = /^https?:\/\//.test(current?.album || '')
+  const liked = currentKey && favoriteKeys.includes(currentKey)
+  const isCoverUrl = isImageUrl(current?.album || '')
   const modeIcon = playMode === 'single' ? 'fa-repeat' : playMode === 'random' ? 'fa-shuffle' : 'fa-list-ul'
-  const modeTitle = playMode === 'single' ? '单曲循环' : playMode === 'random' ? '随机播放' : '列表播放'
-  const visibleLyrics = lyrics.length ? lyrics : [{ time:0, text: current ? '暂无歌词，或歌曲尚未开始播放。' : '搜索并选择一首歌，歌词会在这里动态滚动。' }]
-  return <><PageChrome /><div className="main-content music-page">
+  const modeTitle = playMode === 'single' ? '单曲循环' : playMode === 'random' ? '随机播放' : '列表循环'
+  const visibleLyrics = lyrics.length ? lyrics : [{ time:0, text: current ? (playerState === 'resolving' ? '正在获取播放地址与歌词...' : '暂无歌词，享受音乐。') : '搜索并选择一首歌，歌词会在这里动态滚动。' }]
+  return <><PageChrome /><div className={`main-content music-page ${current ? 'has-current' : ''}`}>
     {err && <div className="alert alert-error">{err}</div>}
-    <div className="search-container music-search-container animate-fadeInUp">
+    <header className="music-page-head">
+      <div><h1><i className="fas fa-music" /> 音乐</h1><p>搜索、队列、歌词与连续播放，保持社区的清爽体验。</p></div>
+      <span className="music-status-chip"><i className="fas fa-plug" /> {sourceName}</span>
+    </header>
+    <div className="search-container music-search-container animate-fadeInUp" ref={searchAnchorRef}>
       <form className="music-search-form" onSubmit={submitMusicSearch}>
-        <div className="search-input-wrap music-input-wrap"><i className={`fas ${searching ? 'fa-spinner fa-spin' : 'fa-search'}`} /><input className="search-input" value={query} onFocus={() => query.trim() && setPopoverOpen(true)} onChange={e => handleMusicInput(e.target.value)} placeholder="搜索歌名、歌手或专辑..." /></div>
+        <div className="search-input-wrap music-input-wrap"><i className={`fas ${searching ? 'fa-spinner fa-spin' : 'fa-search'}`} /><input className="search-input" value={query} onFocus={() => query.trim() && setPopoverOpen(true)} onChange={e => handleMusicInput(e.target.value)} placeholder="搜索歌名、歌手或专辑" />{query && <button type="button" className="music-clear-btn" onClick={() => handleMusicInput('')} aria-label="清空搜索"><i className="fas fa-xmark" /></button>}</div>
         <select className="search-select music-source-select" value={sourceId} onChange={e => { const v = e.target.value; setSourceId(v); if (query.trim()) setTimeout(() => runMusicSearch(query, 1, false, v), 0) }}>
           {(info?.sources || []).map(src => <option key={src.id} value={src.id}>{src.name}</option>)}
         </select>
-        <button type="submit" className="btn btn-primary"><i className="fas fa-search" /> 搜索</button>
-        {query && <button type="button" className="btn btn-secondary" onClick={() => handleMusicInput('')}>清空</button>}
+        <button type="submit" className="btn btn-primary music-search-btn"><i className="fas fa-search" /> <span>搜索</span></button>
       </form>
-      {query.trim() && popoverOpen && <div className="music-result-panel" onScroll={handleResultScroll}>
-        {results.length ? results.map(song => <button type="button" className="music-result-row" key={`${song.source}-${song.id}`} onClick={() => playSong(song)}><span><b>{song.name}</b><small>{song.artist} · {song.album && !/^https?:\/\//.test(song.album) ? `${song.album} · ` : ''}{song.source}</small></span><i className="fas fa-play" /></button>) : <div className="music-empty-inline">{searching ? '搜索中...' : '暂无匹配歌曲'}</div>}
-        {results.length > 0 && <div className="music-load-more">{searching ? '加载中...' : hasMore ? '滚动到底部自动加载更多' : '已经到底了'}</div>}
-      </div>}
     </div>
-    <section className="music-player-card card animate-fadeInUp">
-      <audio ref={audioRef} src={current?.url || ''} className="music-audio" onTimeUpdate={onTimeUpdate} onLoadedMetadata={onTimeUpdate} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} onEnded={handleEnded} />
-      <div className="music-lyrics" ref={lyricBoxRef}>{visibleLyrics.map((l, idx) => <p key={`${l.time}-${idx}`} className={`music-lyric-line ${lyrics[lyricIndex]?.time === l.time ? 'active' : ''} ${!lyrics.length ? 'muted-lyric' : ''}`}>{l.text}</p>)}</div>
-      <div className="music-control-panel">
-        <div className="music-now">
+    <MusicSearchOverlay open={popoverOpen} anchorRef={searchAnchorRef} query={query} results={results} searching={searching} hasMore={hasMore} currentKey={currentKey} loadingSongKey={loadingSongKey} onPlay={playSong} onQueue={addToQueue} onScrollBottom={loadMore} onClose={() => setPopoverOpen(false)} />
+
+    <section className="music-shell animate-fadeInUp">
+      <div className="music-player-card card">
+        <audio ref={audioRef} src={current?.url || ''} className="music-audio" onTimeUpdate={onTimeUpdate} onLoadedMetadata={onTimeUpdate} onPlay={() => setPlayerState('playing')} onPause={() => setPlayerState(current?.url ? 'paused' : 'idle')} onEnded={handleEnded} />
+        <div className="music-hero-row">
           <div className="music-disc">{isCoverUrl ? <img src={current.album} alt="专辑封面" loading="lazy" decoding="async" /> : <i className={`fas ${current ? 'fa-music' : 'fa-compact-disc'}`} />}</div>
-          <div className="music-track-meta"><h2>{current?.name || '还没有播放歌曲'}</h2><p>{current ? `${current.artist} · ${sourceName}` : '从上方搜索结果里选择一首歌开始播放'}</p></div>
+          <div className="music-track-meta"><span className={`music-player-state state-${playerState}`}>{playerState === 'resolving' ? '获取中' : playerState === 'playing' ? '播放中' : playerState === 'error' ? '播放失败' : current ? '已就绪' : '待播放'}</span><h2>{current?.name || '选择一首歌开始'}</h2><p>{current ? `${current.artist} · ${sourceName}` : '从上方搜索，或从右侧最近播放继续。'}</p>{playerError && <small className="music-player-error">{playerError}</small>}</div>
         </div>
-        <div className="music-progress music-slider-row"><span>{formatPlayerTime(currentTime)}</span><input className="music-range" type="range" min="0" max={duration || 0} step="1" value={Math.min(currentTime, duration || currentTime || 0)} onChange={e => seekTo(e.target.value)} /><span>{formatPlayerTime(duration)}</span></div>
-        <div className="music-actions">
-          <button type="button" className={`music-icon-btn ${liked ? 'active' : ''}`} title="收藏" onClick={() => setLiked(v => !v)}><i className={`${liked ? 'fas' : 'far'} fa-heart`} /></button>
-          <button type="button" className="music-icon-btn" title="上一首" onClick={() => playSibling(-1)}><i className="fas fa-backward-step" /></button>
-          <button type="button" className="music-play-btn" title={isPlaying ? '暂停' : '播放'} onClick={togglePlay}><i className={`fas ${isPlaying ? 'fa-pause' : 'fa-play'}`} /></button>
-          <button type="button" className="music-icon-btn" title="下一首" onClick={() => playSibling(1)}><i className="fas fa-forward-step" /></button>
-          <button type="button" className="music-icon-btn" title="添加到歌单"><i className="fas fa-plus" /></button>
-          <button type="button" className="music-icon-btn" title={modeTitle} onClick={() => setPlayMode(m => m === 'list' ? 'single' : m === 'single' ? 'random' : 'list')}><i className={`fas ${modeIcon}`} /></button>
-          <label className="music-volume"><i className="fas fa-volume-high" /><input className="music-range volume-range" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))} /></label>
+        <div className="music-lyrics" ref={lyricBoxRef}>{visibleLyrics.map((l, idx) => {
+          const distance = lyricIndex < 0 ? 9 : Math.abs(idx - lyricIndex)
+          return <p key={`${l.time}-${idx}`} className={`music-lyric-line ${lyrics[lyricIndex]?.time === l.time ? 'active' : ''} ${distance <= 2 ? 'nearby' : ''} ${!lyrics.length ? 'muted-lyric' : ''}`} onClick={() => lyrics.length && seekTo(l.time)}>{l.text}</p>
+        })}</div>
+        <div className="music-control-panel">
+          <div className="music-progress music-slider-row"><span>{formatPlayerTime(currentTime)}</span><input className="music-range" type="range" min="0" max={duration || 0} step="1" value={Math.min(currentTime, duration || currentTime || 0)} disabled={!duration} onChange={e => seekTo(e.target.value)} /><span>{formatPlayerTime(duration)}</span></div>
+          <div className="music-actions">
+            <button type="button" className={`music-icon-btn ${liked ? 'active' : ''}`} title="收藏到本机" aria-label="收藏到本机" disabled={!current} onClick={toggleFavorite}><i className={`${liked ? 'fas' : 'far'} fa-heart`} /></button>
+            <button type="button" className="music-icon-btn" title="上一首" aria-label="上一首" disabled={queue.length < 2} onClick={() => playSibling(-1)}><i className="fas fa-backward-step" /></button>
+            <button type="button" className="music-play-btn" title={isPlaying ? '暂停' : '播放'} aria-label={isPlaying ? '暂停' : '播放'} disabled={!current?.url || playerState === 'resolving'} onClick={togglePlay}><i className={`fas ${playerState === 'resolving' ? 'fa-spinner fa-spin' : isPlaying ? 'fa-pause' : 'fa-play'}`} /></button>
+            <button type="button" className="music-icon-btn" title="下一首" aria-label="下一首" disabled={queue.length < 2} onClick={() => playSibling(1)}><i className="fas fa-forward-step" /></button>
+            <button type="button" className="music-icon-btn" title="加入队列" aria-label="加入队列" disabled={!current} onClick={() => current && addToQueue(current)}><i className="fas fa-plus" /></button>
+            <button type="button" className="music-icon-btn" title={modeTitle} aria-label={modeTitle} onClick={() => setPlayMode(m => m === 'list' ? 'single' : m === 'single' ? 'random' : 'list')}><i className={`fas ${modeIcon}`} /></button>
+            <label className="music-volume"><button type="button" aria-label="静音切换" onClick={() => setVolume(v => v > 0 ? 0 : 0.72)}><i className={`fas ${volume > 0 ? 'fa-volume-high' : 'fa-volume-xmark'}`} /></button><input className="music-range volume-range" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))} /></label>
+          </div>
         </div>
       </div>
+      <aside className="music-side card">
+        <div className="music-side-section"><div className="music-side-head"><h3>播放队列</h3><span>{queue.length} 首</span></div>{queue.length ? queue.map((song, idx) => <button key={normalizeSongKey(song)} type="button" className={`music-queue-row ${idx === queueIndex ? 'active' : ''}`} onClick={() => playQueueIndex(idx)}><span>{idx === queueIndex && isPlaying ? <i className="fas fa-volume-high" /> : idx + 1}</span><b>{song.name}</b><small>{song.artist}</small></button>) : <div className="music-side-empty">播放歌曲后会自动生成队列</div>}</div>
+        <div className="music-side-section"><div className="music-side-head"><h3>最近播放</h3><span>{recentSongs.length} 首</span></div>{recentSongs.length ? recentSongs.slice(0, 8).map(song => <button key={normalizeSongKey(song)} type="button" className="music-queue-row" onClick={() => playSong(song)}><span><i className="fas fa-clock-rotate-left" /></span><b>{song.name}</b><small>{song.artist}</small></button>) : <div className="music-side-empty">还没有最近播放</div>}</div>
+      </aside>
     </section>
+    {current && <div className="music-mini-bar"><div className="music-mini-info"><span>{isCoverUrl ? <img src={current.album} alt="" /> : <i className="fas fa-music" />}</span><b>{current.name}</b><small>{current.artist}</small></div><button type="button" onClick={togglePlay} disabled={playerState === 'resolving'}><i className={`fas ${isPlaying ? 'fa-pause' : 'fa-play'}`} /></button><button type="button" onClick={() => playSibling(1)} disabled={queue.length < 2}><i className="fas fa-forward-step" /></button></div>}
   </div></>
 }
 function AdminPage({ me }) {
