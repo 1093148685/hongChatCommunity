@@ -33,7 +33,8 @@ function updateSeo({ title = '泓聊社区 - 首页', description = '泓聊社�
   setMetaAttr('meta[name="twitter:card"]', 'content', 'summary')
 }
 function textExcerpt(text = '', limit = 150) {
-  const clean = htmlText(String(text || '')).replace(/[#*_`>\[\]()]/g, ' ').replace(/\s+/g, ' ').trim()
+  const withoutImages = String(text || '').replace(/!\[[^\]]*\]\([^)]+\)/g, ' ').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+  const clean = htmlText(withoutImages).replace(/[#*_`>]/g, ' ').replace(/\s+/g, ' ').trim()
   return clean.slice(0, limit)
 }
 async function copyText(text, success = '链接已复制') {
@@ -217,6 +218,7 @@ function Nav({ me, setMe, path, site = defaultSite }) {
       <div className="navbar-menu">
         <a href="/" className={cls('/')}><i className="fas fa-home" /> 首页</a>
         <a href="/channels" className={cls('/channels')}><i className="fas fa-broadcast-tower" /> 频道</a>
+        <a href="/articles" className={cls('/articles')}><i className="fas fa-book-open" /> 文章</a>
         <a href="/market" className={cls('/market')}><i className="fas fa-store" /> 泓市场</a>
         <a href="/games" className={cls('/games')}><i className="fas fa-gamepad" /> 小游戏</a>
         <a href="/music" className={cls('/music')}><i className="fas fa-music" /> 音乐</a>
@@ -364,6 +366,148 @@ function sourceLinkLabel(url = '') {
   if (u.includes('linux.do')) return '查看 Linux.do 原帖'
   if (u.includes('forum.naixi.net')) return '查看奶昔论坛原帖'
   return '查看来源原帖'
+}
+
+function escapeHtml(s = '') {
+  return String(s || '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]))
+}
+function slugifyHeading(text = '') {
+  const base = String(text || '').trim().toLowerCase().replace(/<[^>]+>/g, '').replace(/[^\w\u4e00-\u9fa5\-\s]/g, '').replace(/\s+/g, '-')
+  return base || 'section'
+}
+function articleToc(md = '') {
+  const seen = new Map()
+  return String(md || '').split('\n').map(line => {
+    const m = /^(#{2,6})\s+(.+)$/.exec(line.trim())
+    if (!m) return null
+    const text = m[2].replace(/[*_`]/g, '').trim()
+    const base = slugifyHeading(text)
+    const n = seen.get(base) || 0
+    seen.set(base, n + 1)
+    return { level: m[1].length, text, id: n ? `${base}-${n + 1}` : base }
+  }).filter(Boolean)
+}
+function renderMarkdown(md = '') {
+  const headingIds = new Map()
+  let text = escapeHtml(md)
+  const blocks = []
+  text = text.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const id = `@@CODE${blocks.length}@@`; blocks.push(`<pre><code>${code}</code></pre>`); return id
+  })
+  text = text.replace(/^(#{1,6}) (.*)$/gm, (_, marks, title) => {
+    const level = marks.length
+    const base = slugifyHeading(title)
+    const n = headingIds.get(base) || 0
+    headingIds.set(base, n + 1)
+    const id = n ? `${base}-${n + 1}` : base
+    return `<h${level} id="${id}">${title}</h${level}>`
+  })
+  text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" loading="lazy" />')
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+|\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+  text = text.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  text = text.split(/\n{2,}/).map(part => {
+    if (/^@@CODE\d+@@$/.test(part.trim()) || /^<h[1-6]/.test(part) || /^<pre>/.test(part)) return part
+    const lines = part.split('\n')
+    if (lines.every(x => /^(&gt;|>)\s?/.test(x.trim()))) return `<blockquote>${lines.map(x => x.trim().replace(/^(&gt;|>)\s?/, '')).join('<br>')}</blockquote>`
+    if (lines.every(x => /^[-*] /.test(x.trim()))) return `<ul>${lines.map(x => `<li>${x.trim().slice(2)}</li>`).join('')}</ul>`
+    if (lines.every(x => /^\d+[.)]\s+/.test(x.trim()))) return `<ol>${lines.map(x => `<li>${x.trim().replace(/^\d+[.)]\s+/, '')}</li>`).join('')}</ol>`
+    return `<p>${part.replace(/\n/g, '<br>')}</p>`
+  }).join('')
+  blocks.forEach((html, i) => { text = text.replace(`@@CODE${i}@@`, html) })
+  return text
+}
+
+function MarkdownEditor({ value, onChange, onUpload, placeholder = '使用 Markdown 编写文章内容...' }) {
+  const [tab, setTab] = useState('edit')
+  async function uploadAndInsert(file, crop) {
+    const asset = await onUpload(file, crop)
+    const alt = asset.alt_text || asset.original_name || '图片'
+    const next = `${value || ''}\n\n![${alt}](${asset.url})\n`
+    onChange(next)
+    return asset
+  }
+  return <div className="md-editor">
+    <div className="md-editor-toolbar">
+      <div className="md-editor-tabs"><button type="button" className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>编辑</button><button type="button" className={tab === 'preview' ? 'active' : ''} onClick={() => setTab('preview')}>预览</button></div>
+      <div className="admin-actions"><ArticleImageCropUploader onUpload={uploadAndInsert} buttonLabel="上传并裁剪图片" title="上传并裁剪文章图片" /></div>
+    </div>
+    {tab === 'edit' ? <textarea className="form-textarea article-md-textarea" value={value || ''} placeholder={placeholder} onChange={e => onChange(e.target.value)} /> : <div className="markdown-preview article-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(value || '') }} />}
+    <div className="form-hint">支持 Markdown：标题、加粗、列表、代码块、链接、图片。图片上传后会立即进入素材库，用于正文教程插图。</div>
+  </div>
+}
+
+function ArticlesPage({ route = currentRoute() }) {
+  const readParams = () => new URLSearchParams(location.search)
+  const [q, setQ] = useState(readParams().get('q') || '')
+  const [cat, setCat] = useState(readParams().get('category') || '')
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+  async function load(nextQ = q, nextCat = cat) {
+    setErr('')
+    setLoading(true)
+    setData(null)
+    try { setData(await api(`/api/articles?q=${encodeURIComponent(nextQ)}&category=${encodeURIComponent(nextCat)}`)) }
+    catch(e) { setErr(e.message) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => {
+    const params = new URLSearchParams(new URL(route, location.origin).search)
+    const nextQ = params.get('q') || ''
+    const nextCat = params.get('category') || ''
+    setQ(nextQ); setCat(nextCat)
+    updateSeo({ title:'全部文章 - 泓聊社区', description:'泓聊社区文章：分类教程、开通流程、使用说明和常见问题。' })
+    load(nextQ, nextCat)
+  }, [route])
+  const categories = data?.categories || []
+  const articles = data?.items || []
+  const activeCat = categories.find(c => String(c.slug) === String(cat) || String(c.id) === String(cat))
+  const isCollection = Boolean(cat || q.trim())
+  function submit(e) {
+    e.preventDefault()
+    const qs = new URLSearchParams()
+    if (q.trim()) qs.set('q', q.trim())
+    if (cat) qs.set('category', cat)
+    navigate(`/articles${qs.toString() ? '?' + qs.toString() : ''}`)
+  }
+  function openCategory(slug) {
+    navigate(`/articles?category=${encodeURIComponent(slug)}`)
+  }
+  return <><PageChrome /><div className="main-content articles-page kb-page">
+    <div className="search-container article-search-container"><form className="article-search-card" onSubmit={submit}><div className="search-input-wrap"><i className="fas fa-search" /><input className="search-input" value={q} onChange={e => setQ(e.target.value)} placeholder="搜索教程、文章或问题..." /></div><select className="search-select" value={cat} onChange={e => { const v = e.target.value; setCat(v); navigate(v ? `/articles?category=${encodeURIComponent(v)}` : '/articles') }}><option value="">全部文章</option>{categories.map(c => <option key={c.id} value={c.slug}>{c.name}（{c.article_count}）</option>)}</select><button className="btn btn-primary"><i className="fas fa-search" /> 搜索</button></form></div>
+    {err && <div className="alert alert-error">{err}</div>}
+    {!isCollection && <section className="kb-collection-shell">
+      <nav className="kb-breadcrumb"><a href="/articles">全部文章</a></nav>
+      {loading && !data ? <PostListSkeleton count={3} /> : <div className="kb-collection-grid">{categories.map(c => <button key={c.id} className="kb-collection-card" onClick={() => openCategory(c.slug)}><span><i className="fas fa-book-open" /></span><div><b>{c.name}</b><p>{c.description || '暂无说明'}</p><small>{c.article_count || 0} 篇文章</small></div><i className="fas fa-chevron-right" /></button>)}</div>}
+    </section>}
+    {isCollection && <section className="kb-article-list-shell">
+      <nav className="kb-breadcrumb"><a href="/articles">全部文章</a><span>/</span><span>{q.trim() ? '搜索结果' : (activeCat?.name || '文章列表')}</span></nav>
+      <div className="kb-title-block compact"><h1>{q.trim() ? `搜索：${q.trim()}` : (activeCat?.name || '文章列表')}</h1><small>{loading ? '加载中...' : `${articles.length} 篇文章`}</small></div>
+      <div className="kb-list-card">{loading ? <PostListSkeleton count={5} /> : (articles.length ? articles.map(a => <a className="kb-article-row" href={`/articles/${a.slug || a.id}`} key={a.id}><div><b>{a.title}</b><p>{a.summary}</p><div className="post-meta"><span>{a.category_name || '未分类'}</span><span>{relativeTime(a.published_at || a.created_at)}</span><span><i className="far fa-eye" /> {a.views || 0}</span></div></div><i className="fas fa-chevron-right" /></a>) : <div className="empty-state"><i className="fas fa-search" /><p>没有找到文章</p></div>)}</div>
+    </section>}
+  </div></>
+}
+
+function ArticleDetail({ id }) {
+  const [data, setData] = useState(null)
+  const [err, setErr] = useState('')
+  const [tocOpen, setTocOpen] = useState(false)
+  useEffect(() => { api(`/api/articles/${id}`).then(r => { setData(r); setTocOpen(false); updateSeo({ title:`${r.article.title} - 泓聊文章`, description:r.article.summary || textExcerpt(r.article.content_markdown), type:'article' }) }).catch(e => setErr(e.message)) }, [id])
+  if (err) return <><PageChrome /><div className="main-content"><div className="alert alert-error">{err}</div></div></>
+  if (!data) return <DetailSkeleton />
+  const a = data.article
+  const toc = articleToc(a.content_markdown || '')
+  const catHref = `/articles?category=${encodeURIComponent(a.category_slug || a.category_id || '')}`
+  const jumpToToc = (e, item) => {
+    e.preventDefault()
+    const el = document.getElementById(item.id)
+    if (el) {
+      history.replaceState(null, '', `#${item.id}`)
+      el.scrollIntoView({ behavior:'smooth', block:'start' })
+    }
+    setTocOpen(false)
+  }
+  return <><PageChrome /><div className="main-content article-doc-page"><nav className="kb-breadcrumb"><a href="/articles">全部文章</a><span>/</span><a href={catHref}>{a.category_name || '未分类'}</a><span>/</span><span>{a.title}</span></nav><div className="article-doc-layout"><article className="article-detail-card article-doc-card"><header className="article-detail-head"><span className="eyebrow"><i className="fas fa-folder" /> {a.category_name || '未分类'}</span><h1>{a.title}</h1><div className="post-meta"><span>{a.author || '管理员'}</span><span>{displayTime(a.published_at || a.created_at)}</span><span><i className="far fa-eye" /> {a.views || 0}</span></div></header><div className="article-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(a.content_markdown || '') }} /></article><aside className={`article-toc-card ${tocOpen ? 'open' : ''}`}><button className="article-toc-toggle" type="button" onClick={() => setTocOpen(v => !v)}><span>目录</span><i className={`fas ${tocOpen ? 'fa-chevron-up' : 'fa-chevron-down'}`} /></button><div className="article-toc-body">{toc.length ? <div>{toc.map(item => <a key={item.id} className={`toc-level-${item.level}`} href={`#${item.id}`} onClick={e => jumpToToc(e, item)}>{item.text}</a>)}</div> : <p>这篇文章暂无目录</p>}<a className="back-link small" href={catHref}><i className="fas fa-arrow-left" /> 返回列表</a></div></aside></div></div></>
 }
 
 function ProfileStats({ stats = {} }) {
@@ -1254,6 +1398,111 @@ function PostDetail({ id, me }) {
   </div></div></>
 }
 
+
+function ArticleImageCropUploader({ onUpload, buttonLabel = '上传并裁剪图片', title = '上传并裁剪图片', buttonClass = 'btn btn-sm btn-secondary' }) {
+  const [open, setOpen] = useState(false)
+  const [file, setFile] = useState(null)
+  const [preview, setPreview] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [ready, setReady] = useState(false)
+  const [scale, setScale] = useState(1)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const imgRef = useRef(null)
+  const dragRef = useRef(null)
+  const cropSize = 220
+  const stageSize = 280
+  const cropLeft = (stageSize - cropSize) / 2
+  const cropTop = (stageSize - cropSize) / 2
+  const getContainSize = () => {
+    const img = imgRef.current
+    if (!img?.naturalWidth || !img?.naturalHeight) return { width: stageSize, height: stageSize }
+    const ratio = Math.min(stageSize / img.naturalWidth, stageSize / img.naturalHeight)
+    return { width: img.naturalWidth * ratio, height: img.naturalHeight * ratio }
+  }
+  const minScaleFor = (base = getContainSize()) => Math.max(1, cropSize / Math.max(1, base.width), cropSize / Math.max(1, base.height))
+  const maxScaleFor = (base = getContainSize()) => Math.max(3, minScaleFor(base) * 3)
+  const clampOffset = (next, nextScale = scale) => {
+    const base = getContainSize()
+    const safeScale = Math.min(maxScaleFor(base), Math.max(minScaleFor(base), Number(nextScale) || 1))
+    const w = base.width * safeScale
+    const h = base.height * safeScale
+    return { x: Math.min(cropLeft, Math.max(cropLeft + cropSize - w, next.x)), y: Math.min(cropTop, Math.max(cropTop + cropSize - h, next.y)) }
+  }
+  const fitImage = () => {
+    setReady(true)
+    const base = getContainSize()
+    const initialScale = minScaleFor(base)
+    setScale(initialScale)
+    setOffset(clampOffset({ x: (stageSize - base.width * initialScale) / 2, y: (stageSize - base.height * initialScale) / 2 }, initialScale))
+  }
+  const pick = f => {
+    if (!f) return
+    if (!String(f.type || '').startsWith('image/')) return notify('请选择图片文件', 'error')
+    if (preview) URL.revokeObjectURL(preview)
+    setFile(f); setReady(false); setPreview(URL.createObjectURL(f)); setScale(1); setOffset({ x:0, y:0 })
+  }
+  const setZoom = value => {
+    const base = getContainSize()
+    const nextScale = Math.min(maxScaleFor(base), Math.max(minScaleFor(base), Number(value) || 1))
+    const centerX = cropLeft + cropSize / 2
+    const centerY = cropTop + cropSize / 2
+    const oldScale = Math.max(minScaleFor(base), scale || 1)
+    setScale(nextScale)
+    setOffset(clampOffset({ x: centerX - (centerX - offset.x) * (nextScale / oldScale), y: centerY - (centerY - offset.y) * (nextScale / oldScale) }, nextScale))
+  }
+  const point = e => { const t = e.touches?.[0] || e.changedTouches?.[0] || e; return { x:t.clientX, y:t.clientY } }
+  const startDrag = e => {
+    if (!preview || busy) return
+    e.preventDefault()
+    const p = point(e)
+    dragRef.current = { x:p.x, y:p.y, start:offset }
+    window.addEventListener('mousemove', moveDrag, { passive:false }); window.addEventListener('mouseup', endDrag)
+    window.addEventListener('touchmove', moveDrag, { passive:false }); window.addEventListener('touchend', endDrag)
+  }
+  const moveDrag = e => {
+    const d = dragRef.current
+    if (!d) return
+    e.preventDefault()
+    const p = point(e)
+    setOffset(clampOffset({ x:d.start.x + p.x - d.x, y:d.start.y + p.y - d.y }))
+  }
+  const endDrag = () => {
+    dragRef.current = null
+    window.removeEventListener('mousemove', moveDrag); window.removeEventListener('mouseup', endDrag)
+    window.removeEventListener('touchmove', moveDrag); window.removeEventListener('touchend', endDrag)
+  }
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); endDrag() }, [preview])
+  function cropParams() {
+    const img = imgRef.current
+    if (!img?.naturalWidth || !img?.naturalHeight) throw new Error('图片尚未加载完成')
+    const base = getContainSize()
+    const renderedW = base.width * scale
+    const renderedH = base.height * scale
+    const x = (cropLeft - offset.x) / renderedW * img.naturalWidth
+    const y = (cropTop - offset.y) / renderedH * img.naturalHeight
+    const width = cropSize / renderedW * img.naturalWidth
+    const height = cropSize / renderedH * img.naturalHeight
+    const safeX = Math.max(0, Math.min(img.naturalWidth - 1, x))
+    const safeY = Math.max(0, Math.min(img.naturalHeight - 1, y))
+    return { x:Math.round(safeX), y:Math.round(safeY), width:Math.round(Math.min(width, img.naturalWidth - safeX)), height:Math.round(Math.min(height, img.naturalHeight - safeY)) }
+  }
+  async function upload() {
+    if (!file) return notify('请先选择图片', 'error')
+    setBusy(true)
+    try {
+      await onUpload(file, cropParams())
+      notify('图片已上传到素材库', 'success')
+      setOpen(false); setFile(null); setReady(false); if (preview) URL.revokeObjectURL(preview); setPreview('')
+    } catch(e) { notify(e.message, 'error') } finally { setBusy(false) }
+  }
+  const base = ready ? getContainSize() : { width:stageSize, height:stageSize }
+  const minZoom = ready ? minScaleFor(base) : 1
+  const maxZoom = ready ? maxScaleFor(base) : 3
+  const imageStyle = { width:base.width, height:base.height, transform:`translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` }
+  const modal = open ? createPortal(<div className="modal-mask full-avatar-mask global-avatar-crop-layer" onClick={() => setOpen(false)}><div className="avatar-modal avatar-crop-modal article-crop-modal" onClick={e => e.stopPropagation()}><h3><i className="fas fa-crop-simple" /> {title}</h3><div className="drop-zone" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); pick(e.dataTransfer.files?.[0]) }}><input type="file" accept="image/*" onChange={e => pick(e.target.files?.[0])} /><p>点击选择或拖入图片</p><small>拖动图片调整位置，用滑块缩放；上传后会立即出现在右侧素材库</small></div>{preview && <div className="crop-stage" onMouseDown={startDrag} onTouchStart={startDrag}><img ref={imgRef} className="crop-image" src={preview} alt="裁剪" onLoad={fitImage} draggable="false" style={imageStyle} /><div className="crop-dim crop-dim-top" /><div className="crop-dim crop-dim-bottom" /><div className="crop-dim crop-dim-left" /><div className="crop-dim crop-dim-right" /><div className="crop-box article-crop-box" /></div>}{preview && <div className="crop-controls single"><label>缩放 <input type="range" min={minZoom} max={maxZoom} step="0.01" value={Math.max(minZoom, Math.min(maxZoom, scale))} onChange={e => setZoom(e.target.value)} /></label></div>}<div className="admin-actions"><button className="btn btn-primary" disabled={busy || !file || !ready} onClick={upload}>{busy ? '上传中' : '确认上传'}</button><button className="btn btn-secondary" onClick={() => setOpen(false)}>取消</button></div></div></div>, document.body) : null
+  return <><button type="button" className={buttonClass} onClick={() => setOpen(true)}><i className="fas fa-image" /> {buttonLabel}</button>{modal}</>
+}
+
 function AvatarUploader({ onDone }) {
   const [open, setOpen] = useState(false)
   const [file, setFile] = useState(null)
@@ -1502,6 +1751,7 @@ function AdminPage({ me }) {
     ['announcements', '公告', 'fa-bullhorn'],
     ['donors', '捐赠者', 'fa-heart'],
     ['channels', '频道', 'fa-broadcast-tower'],
+    ['articles', '文章', 'fa-book-open'],
     ['market', '泓市场', 'fa-store'],
     ['settings', '系统设置', 'fa-gear'],
   ]
@@ -1518,7 +1768,7 @@ function AdminPage({ me }) {
   async function load(nextTab = tab, query = q) {
     setErr(''); setBusy(true)
     try {
-      const url = ['/posts', '/comments', '/users'].some(x => `/api/admin/${nextTab}`.endsWith(x)) ? `/api/admin/${nextTab}?q=${encodeURIComponent(query)}` : `/api/admin/${nextTab}`
+      const url = ['/posts', '/comments', '/users', '/articles'].some(x => `/api/admin/${nextTab}`.endsWith(x)) ? `/api/admin/${nextTab}?q=${encodeURIComponent(query)}` : `/api/admin/${nextTab}`
       const res = await api(url)
       setData(d => ({ ...d, [nextTab]: res }))
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
@@ -1548,7 +1798,7 @@ function AdminPage({ me }) {
     {busy && <div className="admin-busy">正在处理...</div>}
     {tab === 'overview' && <AdminOverview data={data.overview} />}
     {tab === 'risk' && <AdminRisk data={data.risk} />}
-    {['posts', 'comments', 'users'].includes(tab) && <div className="admin-toolbar"><input className="form-input" placeholder="搜索标题、用户或内容" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') load(tab, q) }} /><button className="btn btn-primary" onClick={() => load(tab, q)}><i className="fas fa-search" /> 搜索</button></div>}
+    {['posts', 'comments', 'users', 'articles'].includes(tab) && <div className="admin-toolbar"><input className="form-input" placeholder="搜索标题、用户或内容" value={q} onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') load(tab, q) }} /><button className="btn btn-primary" onClick={() => load(tab, q)}><i className="fas fa-search" /> 搜索</button></div>}
     {tab === 'posts' && <AdminPosts items={items} run={run} />}
     {tab === 'comments' && <AdminComments items={items} run={run} />}
     {tab === 'reports' && <AdminReports items={items} run={run} load={load} />}
@@ -1556,6 +1806,7 @@ function AdminPage({ me }) {
     {tab === 'announcements' && <AdminAnnouncements items={items} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'donors' && <AdminDonors items={items} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'channels' && <AdminChannels data={data.channels} draft={draft} setDraft={setDraft} run={run} />}
+    {tab === 'articles' && <AdminArticles data={data.articles} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'market' && <AdminMarket data={data.market} setAdminData={setData} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'settings' && <AdminSettings data={data.settings} draft={draft} setDraft={setDraft} run={run} />} 
   </div>
@@ -1979,6 +2230,57 @@ function ChannelPostDetail({ id, me }) {
   </div></div></>
 }
 
+
+function AdminArticles({ data, draft, setDraft, run }) {
+  const articles = data?.items || []
+  const categories = data?.categories || []
+  const initialAssets = data?.assets || []
+  const [localAssets, setLocalAssets] = useState(initialAssets)
+  const [assetMeta, setAssetMeta] = useState({ total:data?.assets_total || initialAssets.length, hasMore:Boolean(data?.assets_has_more), loading:false })
+  useEffect(() => { setLocalAssets(initialAssets); setAssetMeta({ total:data?.assets_total || initialAssets.length, hasMore:Boolean(data?.assets_has_more), loading:false }) }, [data])
+  const assets = localAssets
+  const emptyArticle = { title:'', slug:'', category_id: categories[0]?.id || '', summary:'', cover_image:'', content_markdown:'', status:'draft' }
+  const emptyCat = { name:'', slug:'', description:'', sort_order:0, enabled:true }
+  const article = draft.article || emptyArticle
+  const cat = draft.articleCategory || emptyCat
+  const editingArticle = Boolean(article.id)
+  const editingCat = Boolean(cat.id)
+  async function uploadAsset(file, crop = null) {
+    const fd = new FormData(); fd.append('file', file); fd.append('storage_type', 'local')
+    if (crop) {
+      fd.append('x', String(crop.x || 0)); fd.append('y', String(crop.y || 0)); fd.append('width', String(crop.width || 0)); fd.append('height', String(crop.height || 0))
+    }
+    const res = await api('/api/admin/media-assets/upload', { method:'POST', body:fd })
+    if (res.asset) {
+      setLocalAssets(prev => [res.asset, ...prev.filter(a => a.id !== res.asset.id)])
+      setAssetMeta(prev => ({ ...prev, total: Math.max((prev.total || 0) + 1, localAssets.length + 1) }))
+    }
+    return res.asset
+  }
+  async function loadMoreAssets() {
+    if (assetMeta.loading || !assetMeta.hasMore) return
+    setAssetMeta(prev => ({ ...prev, loading:true }))
+    try {
+      const res = await api(`/api/admin/media-assets?limit=40&offset=${assets.length}`)
+      setLocalAssets(prev => [...prev, ...(res.items || []).filter(a => !prev.some(p => p.id === a.id))])
+      setAssetMeta({ total:res.total || assets.length, hasMore:Boolean(res.has_more), loading:false })
+    } catch(e) {
+      setAssetMeta(prev => ({ ...prev, loading:false }))
+      notify(e.message, 'error')
+    }
+  }
+  const saveCategory = () => run(() => api(editingCat ? `/api/admin/article-categories/${cat.id}` : '/api/admin/article-categories', { method: editingCat ? 'PUT' : 'POST', body: JSON.stringify({ ...cat, sort_order:Number(cat.sort_order || 0), enabled:cat.enabled !== false }) }).then(() => setDraft({ ...draft, articleCategory: emptyCat })))
+  const saveArticle = (status = article.status || 'draft') => run(() => api(editingArticle ? `/api/admin/articles/${article.id}` : '/api/admin/articles', { method: editingArticle ? 'PUT' : 'POST', body: JSON.stringify({ ...article, category_id: article.category_id ? Number(article.category_id) : null, status }) }).then(() => setDraft({ ...draft, article: emptyArticle })))
+  const insertAsset = asset => setDraft({ ...draft, article: { ...article, content_markdown: `${article.content_markdown || ''}\n\n![${asset.alt_text || asset.original_name || '图片'}](${asset.url})\n` } })
+  return <div className="admin-card article-admin"><div className="admin-card-head"><h3><i className="fas fa-book-open" /> 文章管理</h3><div className="admin-actions"><span className="storage-pill">社区本地图床</span><span className="storage-pill muted">第三方图床预留</span></div></div>
+    <div className="article-admin-grid">
+      <section className="article-editor-panel"><h3>{editingArticle ? '编辑文章' : '发布文章'}</h3><div className="admin-create article-create"><input className="form-input article-title-input" placeholder="文章标题" value={article.title || ''} onChange={e => setDraft({ ...draft, article:{ ...article, title:e.target.value } })} /><select className="form-select" value={article.category_id || ''} onChange={e => setDraft({ ...draft, article:{ ...article, category_id:e.target.value } })}><option value="">选择分类</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><input className="form-input" placeholder="slug，可留空自动生成" value={article.slug || ''} onChange={e => setDraft({ ...draft, article:{ ...article, slug:e.target.value } })} /><textarea className="form-textarea article-summary" placeholder="摘要（可留空自动截取）" value={article.summary || ''} onChange={e => setDraft({ ...draft, article:{ ...article, summary:e.target.value } })} /><MarkdownEditor value={article.content_markdown || ''} onChange={v => setDraft({ ...draft, article:{ ...article, content_markdown:v } })} onUpload={uploadAsset} /><div className="admin-actions"><button className="btn btn-secondary" disabled={!article.title?.trim() || !article.content_markdown?.trim()} onClick={() => saveArticle('draft')}>保存草稿</button><button className="btn btn-primary" disabled={!article.title?.trim() || !article.content_markdown?.trim()} onClick={() => saveArticle('published')}>发布文章</button>{editingArticle && <button className="btn btn-secondary" onClick={() => setDraft({ ...draft, article:emptyArticle })}>取消编辑</button>}</div></div></section>
+      <aside className="material-library"><div className="material-head"><h3><i className="fas fa-images" /> 素材库</h3><small>{assets.length}/{assetMeta.total || assets.length}</small></div><div className="form-hint">新上传图片会显示在最上方；素材很多时向下滚动后点“加载更多”。</div><div className="material-grid">{assets.map(a => <div className="material-card" key={a.id}><img src={a.url} alt="" loading="lazy" /><small>{a.width}×{a.height}</small><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => insertAsset(a)}>插入正文</button></div></div>)}{!assets.length && <div className="empty-state material-empty"><i className="fas fa-image" /><p>暂无素材</p></div>}</div>{assetMeta.hasMore && <button className="btn btn-secondary material-load-more" disabled={assetMeta.loading} onClick={loadMoreAssets}>{assetMeta.loading ? '加载中...' : '加载更多图片'}</button>}</aside>
+    </div>
+    <div className="article-admin-grid lower"><section><h3>分类管理</h3><div className="admin-create category-create"><input className="form-input" placeholder="分类名，如新手入门" value={cat.name || ''} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, name:e.target.value, slug:cat.slug || e.target.value.toLowerCase().replace(/\s+/g,'-') } })} /><input className="form-input" placeholder="slug" value={cat.slug || ''} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, slug:e.target.value } })} /><input className="form-input" type="number" placeholder="排序" value={cat.sort_order ?? 0} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, sort_order:e.target.value } })} /><textarea className="form-textarea" placeholder="分类说明" value={cat.description || ''} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, description:e.target.value } })} /><label className="channel-enabled"><input type="checkbox" checked={cat.enabled !== false} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, enabled:e.target.checked } })} /> 启用</label><button className="btn btn-primary" disabled={!cat.name?.trim()} onClick={saveCategory}>{editingCat ? '保存分类' : '创建分类'}</button>{editingCat && <button className="btn btn-secondary" onClick={() => setDraft({ ...draft, articleCategory:emptyCat })}>取消</button>}</div>{categories.map(c => <div className="admin-row" key={c.id}><div><b>{c.name}</b><p>{c.slug} · {c.enabled ? '启用' : '停用'} · {c.article_count || 0} 篇</p><small>{c.description || '无说明'}</small></div><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => setDraft({ ...draft, articleCategory:{ ...c } })}>编辑</button><button className="btn btn-sm btn-danger" onClick={() => confirm('确定删除/停用分类？') && run(() => api(`/api/admin/article-categories/${c.id}`, { method:'DELETE' }))}>删除</button></div></div>)}</section><section><h3>文章列表</h3>{articles.map(a => <div className="admin-row" key={a.id}><div><b>{a.title}</b><p>{a.category_name || '未分类'} · {a.status === 'published' ? '已发布' : '草稿'} · 浏览 {a.views || 0} · {displayTime(a.updated_at)}</p><small>{textExcerpt(a.summary || a.content_markdown || '', 100)}</small></div><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => setDraft({ ...draft, article:{ ...a, category_id:a.category_id || '' } })}>编辑</button>{a.status === 'published' && <a className="btn btn-sm btn-secondary" href={`/articles/${a.slug}`}>查看</a>}<button className="btn btn-sm btn-secondary" onClick={() => run(() => api(`/api/admin/articles/${a.id}/status`, { method:'PATCH', body:JSON.stringify({ status:a.status === 'published' ? 'draft' : 'published' }) }))}>{a.status === 'published' ? '转草稿' : '发布'}</button><button className="btn btn-sm btn-danger" onClick={() => confirm('确定删除文章？') && run(() => api(`/api/admin/articles/${a.id}`, { method:'DELETE' }))}>删除</button></div></div>)}</section></div>
+  </div>
+}
+
 function AdminChannels({ data, draft, setDraft, run }) {
   const channels = data?.items || []
   const posts = data?.posts || []
@@ -2060,6 +2362,8 @@ function App() {
     if (pathname === '/register') return <AuthPage mode="register" setMe={setMe} site={site} />
     if (pathname === '/new') return <NewPost me={me} />
     if (pathname === '/channels') return <ChannelsPage />
+    if (pathname === '/articles') return <ArticlesPage route={path} />
+    if (pathname.startsWith('/articles/')) return <ArticleDetail id={pathname.split('/')[2]} />
     if (pathname === '/market') return <MarketPage me={me} setMe={setMe} />
     if (pathname.startsWith('/channels/')) return <ChannelDetail slug={pathname.split('/')[2]} />
     if (pathname.startsWith('/channel-post/')) return <ChannelPostDetail id={pathname.split('/')[2]} me={me} />

@@ -529,6 +529,50 @@ def init_db() -> None:
                 FOREIGN KEY(channel_post_id) REFERENCES channel_posts(id),
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
+            CREATE TABLE IF NOT EXISTS article_categories(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                slug TEXT NOT NULL UNIQUE,
+                description TEXT DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS articles(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category_id INTEGER,
+                author_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                slug TEXT NOT NULL UNIQUE,
+                summary TEXT DEFAULT '',
+                content_markdown TEXT NOT NULL,
+                cover_image TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'draft',
+                views INTEGER NOT NULL DEFAULT 0,
+                published_at TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(category_id) REFERENCES article_categories(id),
+                FOREIGN KEY(author_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS media_assets(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uploader_id INTEGER NOT NULL,
+                storage_type TEXT NOT NULL DEFAULT 'local',
+                provider TEXT NOT NULL DEFAULT 'community',
+                filename TEXT NOT NULL,
+                original_name TEXT DEFAULT '',
+                url TEXT NOT NULL,
+                mime_type TEXT DEFAULT '',
+                size INTEGER NOT NULL DEFAULT 0,
+                width INTEGER NOT NULL DEFAULT 0,
+                height INTEGER NOT NULL DEFAULT 0,
+                alt_text TEXT DEFAULT '',
+                source_payload_json TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(uploader_id) REFERENCES users(id)
+            );
             CREATE TABLE IF NOT EXISTS site_settings(
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL DEFAULT ''
@@ -748,6 +792,23 @@ def init_db() -> None:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_post_unique_views_post ON post_unique_views(post_id)")
         conn.execute("UPDATE posts SET last_reply_at=COALESCE(NULLIF(updated_at,''), created_at) WHERE COALESCE(last_reply_at,'')=''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_status_published ON articles(status, published_at DESC, id DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_category_status ON articles(category_id, status, published_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_media_assets_created ON media_assets(created_at DESC, id DESC)")
+        conn.execute("INSERT OR IGNORE INTO article_categories(name,slug,description,sort_order,enabled,created_at,updated_at) VALUES('新手入门','getting-started','社区新用户指南、功能说明和基础教程',0,1,?,?)", (now(), now()))
+
+        for ddl in (
+            "ALTER TABLE articles ADD COLUMN cover_image TEXT DEFAULT ''",
+            "ALTER TABLE articles ADD COLUMN summary TEXT DEFAULT ''",
+            "ALTER TABLE articles ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'",
+            "ALTER TABLE articles ADD COLUMN published_at TEXT DEFAULT ''",
+            "ALTER TABLE article_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE article_categories ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
 
         for ddl in (
             "ALTER TABLE market_orders ADD COLUMN category TEXT NOT NULL DEFAULT 'GIFT_GENERAL'",
@@ -1436,6 +1497,24 @@ class ChannelPostIn(BaseModel):
     content: str = Field(min_length=1, max_length=20000)
     author_name: str | None = Field(default='管理员', max_length=80)
     external_url: str | None = Field(default='', max_length=500)
+
+
+class ArticleCategoryIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    slug: str | None = Field(default='', max_length=80)
+    description: str | None = Field(default='', max_length=1000)
+    sort_order: int = Field(default=0, ge=-9999, le=9999)
+    enabled: bool = True
+
+
+class ArticleIn(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    slug: str | None = Field(default='', max_length=120)
+    category_id: int | None = None
+    summary: str | None = Field(default='', max_length=500)
+    content_markdown: str = Field(min_length=1, max_length=200000)
+    cover_image: str | None = Field(default='', max_length=800)
+    status: str = Field(default='draft', max_length=20)
 
 
 class MarketBuyIn(BaseModel):
@@ -2268,8 +2347,10 @@ def public_user(user: sqlite3.Row | None, default_avatar: str = DEFAULT_AVATAR) 
 
 
 def plain_text_excerpt(text: str, limit: int = 160) -> str:
-    cleaned = re.sub(r"<[^>]+>", " ", text or "")
-    cleaned = re.sub(r"[#*_`>\[\]()]", " ", cleaned)
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", text or "")
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"[#*_`>]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned[:limit]
 
@@ -4051,6 +4132,375 @@ def admin_update_settings(payload: SiteSettingsIn, authorization: str | None = H
             set_setting(conn, key, value)
         updated = get_settings(conn)
     return {"ok": True, "settings": updated}
+
+
+
+def article_category_to_dict(c: sqlite3.Row, article_count: int | None = None) -> dict[str, Any]:
+    return {
+        "id": c["id"],
+        "name": c["name"],
+        "slug": c["slug"],
+        "description": c["description"] or "",
+        "sort_order": c["sort_order"] if "sort_order" in c.keys() else 0,
+        "enabled": bool(c["enabled"] if "enabled" in c.keys() else 1),
+        "created_at": c["created_at"],
+        "updated_at": c["updated_at"],
+        "article_count": int(article_count or 0),
+    }
+
+
+def article_to_dict(a: sqlite3.Row, include_content: bool = False) -> dict[str, Any]:
+    data = {
+        "id": a["id"],
+        "category_id": a["category_id"],
+        "category_name": a["category_name"] if "category_name" in a.keys() else "",
+        "category_slug": a["category_slug"] if "category_slug" in a.keys() else "",
+        "author_id": a["author_id"],
+        "author": a["author"] if "author" in a.keys() else "管理员",
+        "title": a["title"],
+        "slug": a["slug"],
+        "summary": a["summary"] or plain_text_excerpt(a["content_markdown"], 180),
+        "cover_image": a["cover_image"] or "",
+        "status": a["status"],
+        "views": int(a["views"] or 0),
+        "published_at": a["published_at"] or "",
+        "created_at": a["created_at"],
+        "updated_at": a["updated_at"],
+    }
+    if include_content:
+        data["content_markdown"] = a["content_markdown"]
+    return data
+
+
+def media_asset_to_dict(m: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": m["id"],
+        "storage_type": m["storage_type"],
+        "provider": m["provider"],
+        "filename": m["filename"],
+        "original_name": m["original_name"] or "",
+        "url": m["url"],
+        "mime_type": m["mime_type"] or "",
+        "size": int(m["size"] or 0),
+        "width": int(m["width"] or 0),
+        "height": int(m["height"] or 0),
+        "alt_text": m["alt_text"] or "",
+        "created_at": m["created_at"],
+    }
+
+
+def unique_article_slug(conn: sqlite3.Connection, title: str, desired: str | None = "", article_id: int | None = None) -> str:
+    base = clean_slug(desired or title)
+    slug = base
+    n = 2
+    while True:
+        row = conn.execute("SELECT id FROM articles WHERE slug=?", (slug,)).fetchone()
+        if not row or (article_id and int(row["id"]) == int(article_id)):
+            return slug
+        suffix = f"-{n}"
+        slug = f"{base[:120-len(suffix)]}{suffix}"
+        n += 1
+
+
+def get_article(conn: sqlite3.Connection, id_or_slug: str, public_only: bool = True) -> sqlite3.Row | None:
+    where = "a.id=?" if str(id_or_slug).isdigit() else "a.slug=?"
+    params: list[Any] = [int(id_or_slug) if str(id_or_slug).isdigit() else id_or_slug]
+    if public_only:
+        where += " AND a.status='published'"
+    return conn.execute(
+        f"""
+        SELECT a.*, c.name AS category_name, c.slug AS category_slug, u.username AS author
+        FROM articles a
+        LEFT JOIN article_categories c ON c.id=a.category_id
+        LEFT JOIN users u ON u.id=a.author_id
+        WHERE {where}
+        """,
+        params,
+    ).fetchone()
+
+
+@app.get("/api/articles/categories")
+def list_article_categories(authorization: str | None = Header(default=None)):
+    init_db()
+    with db() as conn:
+        require_user_if_guest_restricted(conn, authorization)
+        rows = conn.execute(
+            """
+            SELECT c.*, (SELECT COUNT(*) FROM articles a WHERE a.category_id=c.id AND a.status='published') AS article_count
+            FROM article_categories c WHERE c.enabled=1 ORDER BY c.sort_order ASC, c.id ASC
+            """
+        ).fetchall()
+    return {"items": [article_category_to_dict(r, r["article_count"]) for r in rows]}
+
+
+@app.get("/api/articles")
+def list_articles(q: str = "", category: str = "", authorization: str | None = Header(default=None)):
+    init_db()
+    with db() as conn:
+        require_user_if_guest_restricted(conn, authorization)
+        params: list[Any] = []
+        where = "a.status='published'"
+        if category:
+            where += " AND (c.slug=? OR CAST(c.id AS TEXT)=?)"
+            params.extend([category, category])
+        if q.strip():
+            like = f"%{q.strip()}%"
+            where += " AND (a.title LIKE ? OR a.summary LIKE ? OR a.content_markdown LIKE ? OR c.name LIKE ?)"
+            params.extend([like, like, like, like])
+        rows = conn.execute(
+            f"""
+            SELECT a.*, c.name AS category_name, c.slug AS category_slug, u.username AS author
+            FROM articles a
+            LEFT JOIN article_categories c ON c.id=a.category_id
+            LEFT JOIN users u ON u.id=a.author_id
+            WHERE {where}
+            ORDER BY datetime(COALESCE(NULLIF(a.published_at,''), a.created_at)) DESC, a.id DESC
+            LIMIT 80
+            """,
+            params,
+        ).fetchall()
+        cats = conn.execute(
+            """
+            SELECT c.*, (SELECT COUNT(*) FROM articles a WHERE a.category_id=c.id AND a.status='published') AS article_count
+            FROM article_categories c WHERE c.enabled=1 ORDER BY c.sort_order ASC, c.id ASC
+            """
+        ).fetchall()
+    return {"items": [article_to_dict(r) for r in rows], "categories": [article_category_to_dict(c, c["article_count"]) for c in cats]}
+
+
+@app.get("/api/articles/{id_or_slug}")
+def article_detail(id_or_slug: str, authorization: str | None = Header(default=None)):
+    with db() as conn:
+        require_user_if_guest_restricted(conn, authorization)
+        row = get_article(conn, id_or_slug, public_only=True)
+        if not row:
+            raise HTTPException(status_code=404, detail="文章不存在")
+        conn.execute("UPDATE articles SET views=views+1 WHERE id=?", (row["id"],))
+        row = get_article(conn, str(row["id"]), public_only=True)
+    return {"article": article_to_dict(row, include_content=True)}
+
+
+@app.get("/api/admin/articles")
+def admin_articles(q: str = "", authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        like = f"%{q.strip()}%"
+        params: list[Any] = []
+        where = "1=1"
+        if q.strip():
+            where += " AND (a.title LIKE ? OR a.summary LIKE ? OR a.content_markdown LIKE ? OR c.name LIKE ?)"
+            params.extend([like, like, like, like])
+        articles = conn.execute(
+            f"""
+            SELECT a.*, c.name AS category_name, c.slug AS category_slug, u.username AS author
+            FROM articles a
+            LEFT JOIN article_categories c ON c.id=a.category_id
+            LEFT JOIN users u ON u.id=a.author_id
+            WHERE {where}
+            ORDER BY datetime(a.updated_at) DESC, a.id DESC LIMIT 120
+            """,
+            params,
+        ).fetchall()
+        cats = conn.execute(
+            """
+            SELECT c.*, (SELECT COUNT(*) FROM articles a WHERE a.category_id=c.id) AS article_count
+            FROM article_categories c ORDER BY c.sort_order ASC, c.id ASC
+            """
+        ).fetchall()
+        assets = conn.execute("SELECT * FROM media_assets ORDER BY datetime(created_at) DESC, id DESC LIMIT 40").fetchall()
+        asset_total = conn.execute("SELECT COUNT(*) FROM media_assets").fetchone()[0]
+    return {
+        "items": [article_to_dict(a, include_content=True) for a in articles],
+        "categories": [article_category_to_dict(c, c["article_count"]) for c in cats],
+        "assets": [media_asset_to_dict(m) for m in assets],
+        "assets_total": int(asset_total or 0),
+        "assets_has_more": len(assets) < int(asset_total or 0),
+        "storage_options": [
+            {"value": "local", "label": "社区本地图床", "enabled": True},
+            {"value": "external", "label": "第三方图床接口（预留）", "enabled": False},
+        ],
+    }
+
+
+@app.post("/api/admin/article-categories")
+def admin_create_article_category(payload: ArticleCategoryIn, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        slug = clean_slug(payload.slug or payload.name)
+        try:
+            cur = conn.execute(
+                "INSERT INTO article_categories(name,slug,description,sort_order,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                (payload.name.strip(), slug, (payload.description or '').strip(), int(payload.sort_order or 0), 1 if payload.enabled else 0, now(), now()),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="文章分类名称或 slug 已存在")
+    return {"ok": True, "id": cur.lastrowid}
+
+
+@app.put("/api/admin/article-categories/{category_id}")
+def admin_update_article_category(category_id: int, payload: ArticleCategoryIn, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        slug = clean_slug(payload.slug or payload.name)
+        try:
+            cur = conn.execute(
+                "UPDATE article_categories SET name=?, slug=?, description=?, sort_order=?, enabled=?, updated_at=? WHERE id=?",
+                (payload.name.strip(), slug, (payload.description or '').strip(), int(payload.sort_order or 0), 1 if payload.enabled else 0, now(), category_id),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="文章分类名称或 slug 已存在")
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="文章分类不存在")
+    return {"ok": True}
+
+
+@app.delete("/api/admin/article-categories/{category_id}")
+def admin_delete_article_category(category_id: int, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        used = conn.execute("SELECT COUNT(*) FROM articles WHERE category_id=?", (category_id,)).fetchone()[0]
+        if used:
+            conn.execute("UPDATE article_categories SET enabled=0, updated_at=? WHERE id=?", (now(), category_id))
+            return {"ok": True, "archived": True, "message": "分类下已有文章，已停用保留历史"}
+        cur = conn.execute("DELETE FROM article_categories WHERE id=?", (category_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="文章分类不存在")
+    return {"ok": True}
+
+
+@app.post("/api/admin/articles")
+def admin_create_article(payload: ArticleIn, authorization: str | None = Header(default=None)):
+    admin = require_admin(current_user(authorization))
+    status = "published" if payload.status == "published" else "draft"
+    ts = now()
+    with db() as conn:
+        if payload.category_id:
+            if not conn.execute("SELECT id FROM article_categories WHERE id=?", (payload.category_id,)).fetchone():
+                raise HTTPException(status_code=400, detail="请选择有效文章分类")
+        slug = unique_article_slug(conn, payload.title, payload.slug)
+        cur = conn.execute(
+            """INSERT INTO articles(category_id,author_id,title,slug,summary,content_markdown,cover_image,status,views,published_at,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (payload.category_id, admin["id"], payload.title.strip(), slug, (payload.summary or '').strip(), payload.content_markdown.strip(), (payload.cover_image or '').strip(), status, 0, ts if status == "published" else "", ts, ts),
+        )
+    return {"ok": True, "id": cur.lastrowid, "slug": slug}
+
+
+@app.put("/api/admin/articles/{article_id}")
+def admin_update_article(article_id: int, payload: ArticleIn, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    status = "published" if payload.status == "published" else "draft"
+    with db() as conn:
+        old = conn.execute("SELECT * FROM articles WHERE id=?", (article_id,)).fetchone()
+        if not old:
+            raise HTTPException(status_code=404, detail="文章不存在")
+        if payload.category_id:
+            if not conn.execute("SELECT id FROM article_categories WHERE id=?", (payload.category_id,)).fetchone():
+                raise HTTPException(status_code=400, detail="请选择有效文章分类")
+        slug = unique_article_slug(conn, payload.title, payload.slug or old["slug"], article_id)
+        published_at = old["published_at"] or (now() if status == "published" else "")
+        conn.execute(
+            """UPDATE articles SET category_id=?, title=?, slug=?, summary=?, content_markdown=?, cover_image=?, status=?, published_at=?, updated_at=? WHERE id=?""",
+            (payload.category_id, payload.title.strip(), slug, (payload.summary or '').strip(), payload.content_markdown.strip(), (payload.cover_image or '').strip(), status, published_at if status == "published" else "", now(), article_id),
+        )
+    return {"ok": True, "slug": slug}
+
+
+@app.patch("/api/admin/articles/{article_id}/status")
+def admin_set_article_status(article_id: int, payload: dict[str, Any], authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    status = "published" if payload.get("status") == "published" or payload.get("published") else "draft"
+    with db() as conn:
+        old = conn.execute("SELECT * FROM articles WHERE id=?", (article_id,)).fetchone()
+        if not old:
+            raise HTTPException(status_code=404, detail="文章不存在")
+        published_at = old["published_at"] or (now() if status == "published" else "")
+        conn.execute("UPDATE articles SET status=?, published_at=?, updated_at=? WHERE id=?", (status, published_at if status == "published" else "", now(), article_id))
+    return {"ok": True, "status": status}
+
+
+@app.delete("/api/admin/articles/{article_id}")
+def admin_delete_article(article_id: int, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        cur = conn.execute("DELETE FROM articles WHERE id=?", (article_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="文章不存在")
+    return {"ok": True}
+
+
+@app.get("/api/admin/media-assets")
+def admin_media_assets(limit: int = 40, offset: int = 0, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    limit = max(1, min(int(limit or 40), 80))
+    offset = max(0, int(offset or 0))
+    with db() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM media_assets").fetchone()[0]
+        rows = conn.execute("SELECT * FROM media_assets ORDER BY datetime(created_at) DESC, id DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+    return {"items": [media_asset_to_dict(r) for r in rows], "total": int(total or 0), "limit": limit, "offset": offset, "has_more": offset + len(rows) < int(total or 0)}
+
+
+@app.post("/api/admin/media-assets/upload")
+async def admin_upload_media_asset(
+    file: UploadFile = File(...),
+    storage_type: str = Form("local"),
+    alt_text: str = Form(""),
+    x: int = Form(0),
+    y: int = Form(0),
+    width: int = Form(0),
+    height: int = Form(0),
+    authorization: str | None = Header(default=None),
+):
+    admin = require_admin(current_user(authorization))
+    if storage_type not in {"local", "community"}:
+        raise HTTPException(status_code=400, detail="第三方图床接口已预留，当前请选择社区本地图床")
+    content = await file.read(12 * 1024 * 1024 + 1)
+    if len(content) > 12 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片不能超过 12MB")
+    if not content:
+        raise HTTPException(status_code=400, detail="请选择图片文件")
+    try:
+        img = Image.open(io.BytesIO(content))
+        img = ImageOps.exif_transpose(img)
+        natural_w, natural_h = img.size
+        crop_requested = width > 0 and height > 0
+        if crop_requested:
+            x = max(0, min(int(x), natural_w - 1))
+            y = max(0, min(int(y), natural_h - 1))
+            width = max(1, min(int(width), natural_w - x))
+            height = max(1, min(int(height), natural_h - y))
+            img = img.crop((x, y, x + width, y + height))
+        width, height = img.size
+        fmt = (img.format or "PNG").lower()
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise HTTPException(status_code=400, detail="图片文件无法识别")
+    ext = Path(file.filename or "image").suffix.lower()
+    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        ext = ".png" if fmt == "png" else ".jpg"
+    if crop_requested and ext == ".gif":
+        ext = ".png"
+    name = f"article_{admin['id']}_{secrets.token_hex(10)}{ext}"
+    path = UPLOAD_DIR / name
+    if crop_requested:
+        out = io.BytesIO()
+        save_img = img.convert("RGBA") if ext in {".png", ".webp"} else img.convert("RGB")
+        fmt_name = "WEBP" if ext == ".webp" else ("PNG" if ext == ".png" else "JPEG")
+        save_img.save(out, format=fmt_name, optimize=True)
+        saved = out.getvalue()
+        path.write_bytes(saved)
+        size_bytes = len(saved)
+    else:
+        path.write_bytes(content)
+        size_bytes = len(content)
+    url = f"/uploads/{name}"
+    with db() as conn:
+        cur = conn.execute(
+            """INSERT INTO media_assets(uploader_id,storage_type,provider,filename,original_name,url,mime_type,size,width,height,alt_text,source_payload_json,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (admin["id"], "local", "community", name, file.filename or name, url, file.content_type or "", size_bytes, width, height, alt_text.strip()[:200], "{}", now()),
+        )
+        row = conn.execute("SELECT * FROM media_assets WHERE id=?", (cur.lastrowid,)).fetchone()
+    return {"ok": True, "asset": media_asset_to_dict(row), "url": url}
 
 
 def channel_to_dict(c: sqlite3.Row, post_count: int | None = None) -> dict[str, Any]:
