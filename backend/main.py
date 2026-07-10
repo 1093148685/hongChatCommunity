@@ -4488,6 +4488,25 @@ def admin_media_assets(limit: int = 40, offset: int = 0, authorization: str | No
     return {"items": [media_asset_to_dict(r) for r in rows], "total": int(total or 0), "limit": limit, "offset": offset, "has_more": offset + len(rows) < int(total or 0)}
 
 
+@app.delete("/api/admin/media-assets/{asset_id}")
+def admin_delete_media_asset(asset_id: int, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        row = conn.execute("SELECT * FROM media_assets WHERE id=?", (asset_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="素材不存在")
+        filename = row["filename"] or ""
+        cur = conn.execute("DELETE FROM media_assets WHERE id=?", (asset_id,))
+    if filename:
+        try:
+            path = (UPLOAD_DIR / Path(filename).name).resolve()
+            if UPLOAD_DIR.resolve() in path.parents and path.exists():
+                path.unlink()
+        except OSError:
+            pass
+    return {"ok": True, "deleted": cur.rowcount > 0}
+
+
 @app.post("/api/admin/media-assets/upload")
 async def admin_upload_media_asset(
     file: UploadFile = File(...),
