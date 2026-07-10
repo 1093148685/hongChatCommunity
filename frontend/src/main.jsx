@@ -2040,7 +2040,13 @@ function MusicPage() {
   useEffect(() => {
     const box = lyricBoxRef.current
     const active = box?.querySelector('.music-lyric-line.active')
-    if (box && active) requestAnimationFrame(() => active.scrollIntoView({ block:'center', behavior:'smooth' }))
+    if (!box || !active) return
+    requestAnimationFrame(() => {
+      const boxRect = box.getBoundingClientRect()
+      const activeRect = active.getBoundingClientRect()
+      const nextTop = box.scrollTop + (activeRect.top - boxRect.top) - (box.clientHeight / 2) + (activeRect.height / 2)
+      box.scrollTo({ top: Math.max(0, nextTop), behavior: 'smooth' })
+    })
   }, [lyricIndex])
 
   async function runMusicSearch(term, nextPage = 1, append = false, sourceOverride = '') {
@@ -2177,11 +2183,11 @@ function MusicPage() {
     </header>
     <div className="search-container music-search-container animate-fadeInUp" ref={searchAnchorRef}>
       <form className="music-search-form" onSubmit={submitMusicSearch}>
-        <div className="search-input-wrap music-input-wrap"><i className={`fas ${searching ? 'fa-spinner fa-spin' : 'fa-search'}`} /><input className="search-input" value={query} onFocus={() => query.trim() && setPopoverOpen(true)} onChange={e => handleMusicInput(e.target.value)} placeholder="搜索歌名、歌手或专辑" />{query && <button type="button" className="music-clear-btn" onClick={() => handleMusicInput('')} aria-label="清空搜索"><i className="fas fa-xmark" /></button>}</div>
+        <div className="search-input-wrap music-input-wrap"><i className="fas fa-search" /><input className="search-input" value={query} onFocus={() => query.trim() && setPopoverOpen(true)} onChange={e => handleMusicInput(e.target.value)} placeholder="搜索歌名、歌手或专辑" />{query && <button type="button" className="music-clear-btn" onClick={() => handleMusicInput('')} aria-label="清空搜索"><i className="fas fa-xmark" /></button>}</div>
         <select className="search-select music-source-select" value={sourceId} onChange={e => { const v = e.target.value; setSourceId(v); if (query.trim()) setTimeout(() => runMusicSearch(query, 1, false, v), 0) }}>
           {(info?.sources || []).map(src => <option key={src.id} value={src.id}>{src.name}</option>)}
         </select>
-        <button type="submit" className="btn btn-primary music-search-btn"><i className="fas fa-search" /> <span>搜索</span></button>
+        <button type="submit" className="btn btn-primary music-search-btn" disabled={searching}><i className={`fas ${searching ? 'fa-spinner fa-spin' : 'fa-search'}`} /> <span>{searching ? '搜索中' : '搜索'}</span></button>
       </form>
     </div>
     <MusicSearchOverlay open={popoverOpen} anchorRef={searchAnchorRef} query={query} results={results} searching={searching} hasMore={hasMore} currentKey={currentKey} loadingSongKey={loadingSongKey} onPlay={playSong} onQueue={addToQueue} onScrollBottom={loadMore} onClose={() => setPopoverOpen(false)} />
