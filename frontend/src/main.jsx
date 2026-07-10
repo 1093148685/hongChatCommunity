@@ -118,6 +118,14 @@ function currentRoute() {
   return location.pathname + location.search
 }
 
+function instantScrollTo(top) {
+  const root = document.documentElement
+  const previous = root.style.scrollBehavior
+  root.style.scrollBehavior = 'auto'
+  window.scrollTo({ top, behavior: 'auto' })
+  root.style.scrollBehavior = previous
+}
+
 function navigate(to, { replace = false } = {}) {
   const url = new URL(to, location.origin)
   const next = url.pathname + url.search
@@ -146,7 +154,9 @@ function useRoute() {
         const nextPath = new URL(next, location.origin).pathname
         const prevPath = new URL(prev || '/', location.origin).pathname
         const returningHomeFromPost = nextPath === '/' && prevPath.startsWith('/post/')
-        if (!returningHomeFromPost) window.scrollTo({ top: 0, behavior: 'auto' })
+        const returningChannelsFromDetail = nextPath === '/channels' && prevPath.startsWith('/channels/')
+        const returningChannelFromPost = nextPath.startsWith('/channels/') && prevPath.startsWith('/channel-post/')
+        if (!returningHomeFromPost && !returningChannelsFromDetail && !returningChannelFromPost) instantScrollTo(0)
       })
     }
     const onClick = e => {
@@ -174,6 +184,8 @@ function useRoute() {
 let chromeCache = null
 let chromePromise = null
 let homeStateCache = null
+let channelsStateCache = null
+const channelDetailStateCache = new Map()
 function syncStoredUser(user) {
   if (!user) return null
   localStorage.setItem('yhdet_user', JSON.stringify(user))
@@ -296,12 +308,14 @@ function postPreviewText(raw = '') {
   return { ...masked, text: compactText(masked.text, masked.sensitive ? 120 : 190) }
 }
 function channelPreviewText(title = '', preview = '') {
-  let text = htmlText(preview)
+  const raw = htmlText(preview)
+  let text = raw
   const cleanTitle = compactText(title, 160).replace(/[\s。；，,.]+$/g, '')
   const normalized = text.trim()
   if (cleanTitle && normalized.startsWith(cleanTitle)) text = normalized.slice(cleanTitle.length).replace(/^\s*[：:。\-—|丨,，]*/, '')
-  text = text.replace(/https?:\/\/\S+/g, '').trim()
-  return compactText(text || '查看频道原文', 140)
+  const withoutUrl = text.replace(/https?:\/\/\S+/g, '').trim()
+  text = withoutUrl || raw.trim()
+  return compactText(text, 160)
 }
 function parseTimeValue(s = '') {
   if (!s) return null
@@ -453,7 +467,7 @@ function MarkdownEditor({ value, onChange, onUpload, placeholder = '使用 Markd
   return <div className="md-editor">
     <div className="md-editor-toolbar">
       <div className="md-editor-tabs"><button type="button" className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>编辑</button><button type="button" className={tab === 'preview' ? 'active' : ''} onClick={() => setTab('preview')}>预览</button></div>
-      <div className="admin-actions"><ArticleImageCropUploader onUpload={uploadAndInsert} buttonLabel="上传并裁剪图片" title="上传并裁剪文章图片" /></div>
+      <div className="admin-actions"><ArticleImageCropUploader onUpload={uploadAndInsert} buttonLabel="上传图片" title="上传文章图片" /></div>
     </div>
     {tab === 'edit' ? <textarea className="form-textarea article-md-textarea" value={value || ''} placeholder={placeholder} onChange={e => onChange(e.target.value)} /> : <div className="markdown-preview article-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(value || '') }} />}
     <div className="form-hint">支持 Markdown：标题、加粗、列表、代码块、链接、图片。图片上传后会立即进入素材库，用于正文教程插图。</div>
@@ -566,7 +580,7 @@ function SiteFooter({ site = defaultSite }) {
 }
 
 
-function useFlipList(items, keyFn = x => x.id) {
+function useFlipList(items, keyFn = x => x.id, disabled = false) {
   const refs = useRef(new Map())
   const prevRects = useRef(new Map())
   useLayoutEffect(() => {
@@ -575,6 +589,7 @@ function useFlipList(items, keyFn = x => x.id) {
       if (!el) return
       const next = el.getBoundingClientRect()
       nextRects.set(key, next)
+      if (disabled) return
       const prev = prevRects.current.get(key)
       if (!prev) return
       const dx = prev.left - next.left
@@ -593,9 +608,31 @@ function useFlipList(items, keyFn = x => x.id) {
   }
 }
 
-function PostItem({ post, innerRef }) {
+function PostListMoreMenu({ post, me, onDeleted }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const btnRef = useRef(null)
+  const canManage = Boolean(me && (me.role === 'admin' || String(me.id) === String(post.user_id)))
+  async function remove() {
+    if (!canManage) return notify('无权删除这个帖子', 'error')
+    if (!confirm('确定删除这个帖子吗？相关评论也会一起删除。')) return
+    setBusy(true)
+    try {
+      await api(`/api/posts/${post.id}`, { method:'DELETE' })
+      onDeleted?.(post.id)
+      notify('帖子已删除', 'success')
+    } catch(e) { notify(e.message, 'error') } finally { setBusy(false); setOpen(false) }
+  }
+  return <div className="post-list-more" onClick={e => e.preventDefault()}>
+    <button ref={btnRef} type="button" className="more-toggle" title="更多" aria-label="更多" aria-expanded={open} onClick={e => { e.preventDefault(); e.stopPropagation(); setOpen(v => !v) }}><i className="fas fa-ellipsis" /></button>
+    <PostMoreMenuPortal anchorRef={btnRef} open={open} onClose={() => setOpen(false)} canManage={canManage} busy={busy} onEdit={() => navigate(`/post/${post.id}/edit`)} onRemove={remove} onShare={() => copyText(absoluteUrl(`/post/${post.id}`), '帖子链接已复制')} onReport={() => navigate(`/post/${post.id}`)} />
+  </div>
+}
+
+function PostItem({ post, innerRef, me, onOpen, onDeleted }) {
   const preview = postPreviewText(post.preview || post.content)
-  return <a ref={innerRef} href={`/post/${post.id}`} className={`post-item ${post.bumped ? 'bumped' : ''}`} style={{ textDecoration: 'none', display: 'block' }} onMouseDown={e => e.currentTarget.classList.add('is-active')} onBlur={e => e.currentTarget.classList.remove('is-active')}>
+  return <a ref={innerRef} data-post-id={post.id} href={`/post/${post.id}`} className={`post-item ${post.bumped ? 'bumped' : ''}`} style={{ textDecoration: 'none', display: 'block' }} onClick={e => { if (!e.defaultPrevented) onOpen?.(post.id, e.currentTarget) }} onMouseDown={e => e.currentTarget.classList.add('is-active')} onBlur={e => e.currentTarget.classList.remove('is-active')}>
+    <PostListMoreMenu post={post} me={me} onDeleted={onDeleted} />
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
       <AvatarRing user={post} src={post.avatar} size={48} className="post-avatar-ring" />
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -617,7 +654,7 @@ function UserResults({ users }) {
   return <div className="card animate-fadeInUp"><div className="card-header"><h3><i className="fas fa-users" /> 用户搜索结果</h3></div><div className="card-body"><div className="user-grid">{users.length ? users.map(u => <a className="user-card" href={`/user/${u.id}`} key={u.id} style={{ textDecoration: 'none' }}><AvatarRing user={u} src={u.avatar} size={62} className="user-card-avatar-ring" /><div className={`user-card-name ${usernameClass(u)}`}>{u.username}<UsernameBadge user={u} /></div><div className="user-card-bio">{u.role_label || '社区用户'}</div></a>) : <div className="empty-state"><i className="fas fa-search" /><p>没有找到用户</p></div>}</div></div></div>
 }
 
-function Home() {
+function Home({ me }) {
   const PAGE_SIZE = 30
   const LOAD_COOLDOWN_MS = 1100
   const [data, setData] = useState(() => homeStateCache?.data || null)
@@ -639,8 +676,9 @@ function Home() {
   const restoredScrollRef = useRef(false)
   const queryRef = useRef(query)
   const usersRef = useRef(users)
+  const suppressFlipRef = useRef(Boolean(homeStateCache?.clickedPostId || homeStateCache?.scrollY))
   const feedReconnectRef = useRef(0)
-  const postFlipRef = useFlipList(posts)
+  const postFlipRef = useFlipList(posts, x => x.id, suppressFlipRef.current)
 
   useEffect(() => { queryRef.current = query }, [query])
   useEffect(() => { usersRef.current = users }, [users])
@@ -695,12 +733,18 @@ function Home() {
       ws.onmessage = ev => {
         try {
           const msg = JSON.parse(ev.data)
-          if (!['post_created', 'post_bumped'].includes(msg.type) || !msg.post) return
+          if (msg.type === 'post_deleted' && msg.post_id) {
+            setPosts(prev => prev.filter(p => String(p.id) !== String(msg.post_id)))
+            if (!queryRef.current && !usersRef.current) setTotalPosts(v => Math.max(0, Number(v || 0) - 1))
+            return
+          }
+          if (!['post_created', 'post_bumped', 'post_updated'].includes(msg.type) || !msg.post) return
           // Only auto-update the normal latest-post feed. Do not disturb search/user-result views.
           if (queryRef.current || usersRef.current) return
           setPosts(prev => {
             const existed = prev.some(p => p.id === msg.post.id)
             const merged = existed ? { ...prev.find(p => p.id === msg.post.id), ...msg.post, bumped: msg.type === 'post_bumped' } : msg.post
+            if (msg.type === 'post_updated') return prev.map(p => p.id === msg.post.id ? merged : p)
             return [merged, ...prev.filter(p => p.id !== msg.post.id)]
           })
           if (msg.type === 'post_created') setTotalPosts(v => Number(v || 0) + 1)
@@ -723,11 +767,26 @@ function Home() {
 
   useEffect(() => {
     const preservedScroll = restoredScrollRef.current ? window.scrollY : restoreScrollRef.current
-    homeStateCache = { data, posts, users, usersPage, usersHasMore, hasMore, totalPosts, query, searchType: searchTypeRef.current, scrollY: preservedScroll }
+    homeStateCache = { data, posts, users, usersPage, usersHasMore, hasMore, totalPosts, query, searchType: searchTypeRef.current, scrollY: preservedScroll, clickedPostId: homeStateCache?.clickedPostId, clickedPostTop: homeStateCache?.clickedPostTop }
   }, [data, posts, users, usersPage, usersHasMore, hasMore, totalPosts, query])
-  useEffect(() => {
-    if (restoreScrollRef.current) requestAnimationFrame(() => { window.scrollTo({ top: restoreScrollRef.current, behavior: 'auto' }); restoredScrollRef.current = true })
-    else restoredScrollRef.current = true
+  useLayoutEffect(() => {
+    const cached = homeStateCache || {}
+    const targetId = cached.clickedPostId
+    const targetTop = Number(cached.clickedPostTop || 0)
+    const fallbackY = Number(restoreScrollRef.current || 0)
+    if (targetId) {
+      const el = document.querySelector(`[data-post-id="${targetId}"]`)
+      if (el) {
+        const delta = el.getBoundingClientRect().top - targetTop
+        instantScrollTo(Math.max(0, window.scrollY + delta))
+        restoredScrollRef.current = true
+        if (homeStateCache) { delete homeStateCache.clickedPostId; delete homeStateCache.clickedPostTop; homeStateCache.scrollY = window.scrollY }
+      }
+    } else if (fallbackY) {
+      instantScrollTo(fallbackY)
+      restoredScrollRef.current = true
+    } else restoredScrollRef.current = true
+    suppressFlipRef.current = false
     const saveScroll = () => {
       if (new URL(currentRoute(), location.origin).pathname === '/' && homeStateCache) homeStateCache.scrollY = window.scrollY
     }
@@ -765,6 +824,17 @@ function Home() {
     }
     await loadPostsPage({ reset: true, q: q || '' })
   }
+  function rememberPostOpen(postId, el) {
+    if (!homeStateCache) homeStateCache = {}
+    homeStateCache.scrollY = window.scrollY
+    homeStateCache.clickedPostId = postId
+    homeStateCache.clickedPostTop = el?.getBoundingClientRect?.().top || 0
+  }
+  function removePostFromHome(postId) {
+    setPosts(prev => prev.filter(p => p.id !== postId))
+    setTotalPosts(v => Math.max(0, Number(v || 0) - 1))
+    if (homeStateCache) homeStateCache.posts = (homeStateCache.posts || []).filter(p => p.id !== postId)
+  }
   async function loadMoreUsers() {
     if (!usersHasMore || usersLoadingMore) return
     setUsersLoadingMore(true)
@@ -778,7 +848,7 @@ function Home() {
     finally { setUsersLoadingMore(false) }
   }
   if (!data) return <HomeSkeleton />
-  return <><SiteStats stats={data.stats} /><LedBanner banners={data.banners} /><div className="main-content"><SearchBox onSearch={onSearch} searching={searching} initialQuery={query} initialType={searchTypeRef.current} />{err && <div className="alert alert-error">{err}</div>}<div className="home-layout"><div>{users ? <UserResults users={users} hasMore={usersHasMore} loadingMore={usersLoadingMore} onMore={loadMoreUsers} /> : <div className="card animate-fadeInUp"><div className="card-header"><h3><i className="fas fa-fire" style={{ color: 'var(--secondary)' }} /> 最新帖子</h3>{searching && <span className="mini-busy">刷新中</span>}</div><div>{searching && posts.length === 0 ? <PostListSkeleton count={5} /> : posts.length ? posts.map(p => <PostItem key={p.id} post={p} innerRef={postFlipRef(p.id)} />) : <div className="empty-state search-empty"><i className="fas fa-search" /><p>{query ? `没有找到“${query}”相关帖子` : '还没有帖子'}</p><small>{query ? '换个关键词，或切到文章/频道看看。' : '成为第一个发帖的人。'}</small>{query && <button className="btn btn-sm btn-secondary" onClick={() => onSearch('', 'posts')}>查看全部帖子</button>}</div>}{posts.length > 0 && <div className="infinite-loader">{loadingMore ? <><i className="fas fa-spinner fa-spin" /> 正在加载下一页...</> : hasMore ? '滑到底部自动加载更多' : '已经到底了'}</div>}</div></div>}</div><Sidebar donors={data.donors} notice={data.notice} /></div></div></>
+  return <><SiteStats stats={data.stats} /><LedBanner banners={data.banners} /><div className="main-content"><SearchBox onSearch={onSearch} searching={searching} initialQuery={query} initialType={searchTypeRef.current} />{err && <div className="alert alert-error">{err}</div>}<div className="home-layout"><div>{users ? <UserResults users={users} hasMore={usersHasMore} loadingMore={usersLoadingMore} onMore={loadMoreUsers} /> : <div className="card animate-fadeInUp"><div className="card-header"><h3><i className="fas fa-fire" style={{ color: 'var(--secondary)' }} /> 最新帖子</h3>{searching && <span className="mini-busy">刷新中</span>}</div><div>{searching && posts.length === 0 ? <PostListSkeleton count={5} /> : posts.length ? posts.map(p => <PostItem key={p.id} post={p} me={me} innerRef={postFlipRef(p.id)} onOpen={rememberPostOpen} onDeleted={removePostFromHome} />) : <div className="empty-state search-empty"><i className="fas fa-search" /><p>{query ? `没有找到“${query}”相关帖子` : '还没有帖子'}</p><small>{query ? '换个关键词，或切到文章/频道看看。' : '成为第一个发帖的人。'}</small>{query && <button className="btn btn-sm btn-secondary" onClick={() => onSearch('', 'posts')}>查看全部帖子</button>}</div>}{posts.length > 0 && <div className="infinite-loader">{loadingMore ? <><i className="fas fa-spinner fa-spin" /> 正在加载下一页...</> : hasMore ? '滑到底部自动加载更多' : '已经到底了'}</div>}</div></div>}</div><Sidebar donors={data.donors} notice={data.notice} /></div></div></>
 }
 
 function CaptchaBox({ value, onChange, captchaId, onChallenge }) {
@@ -885,17 +955,40 @@ function AuthPage({ mode, setMe, site = defaultSite }) {
   </div>
 }
 
-function NewPost({ me }) {
+function NewPost({ me, editId = null }) {
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [err, setErr] = useState('')
   const [saving, setSaving] = useState(false)
-  if (!me) return <div className="main-content"><div className="alert alert-info"><i className="fas fa-info-circle" /> 请先 <a href="/login">登录</a> 后发帖</div></div>
+  const [loading, setLoading] = useState(Boolean(editId))
+  useEffect(() => {
+    if (!editId) return
+    let alive = true
+    setLoading(true)
+    api(`/api/posts/${editId}`).then(d => {
+      if (!alive) return
+      const p = d.post
+      const canManage = me && (me.role === 'admin' || String(me.id) === String(p.user_id))
+      if (!canManage) { setErr('无权编辑这个帖子'); return }
+      setTitle(p.title || '')
+      setContent(p.content || '')
+    }).catch(e => setErr(e.message)).finally(() => alive && setLoading(false))
+    return () => { alive = false }
+  }, [editId, me?.id, me?.role])
+  if (!me) return <div className="main-content"><div className="alert alert-info"><i className="fas fa-info-circle" /> 请先 <a href="/login">登录</a> 后{editId ? '编辑帖子' : '发帖'}</div></div>
   async function submit(e) {
     e.preventDefault(); setErr('')
     if (!title.trim() || !content.trim()) return setErr('标题和内容不能为空')
     setSaving(true)
     try {
+      if (editId) {
+        const res = await api(`/api/posts/${editId}`, { method: 'PATCH', body: JSON.stringify({ title: title.trim(), content: content.trim() }) })
+        const edited = res.post || { id: Number(editId), title:title.trim(), content:content.trim(), preview:content.trim() }
+        if (homeStateCache?.posts) homeStateCache.posts = homeStateCache.posts.map(p => String(p.id) === String(editId) ? { ...p, ...edited } : p)
+        notify('帖子已保存', 'success')
+        navigate(`/post/${editId}`)
+        return
+      }
       const res = await api('/api/posts', { method: 'POST', body: JSON.stringify({ title: title.trim(), content: content.trim() }) })
       const newPost = res.post || { id: res.id, title:title.trim(), content:content.trim(), preview:content.trim(), author:me.username, avatar:me.avatar, avatar_border_style:me.avatar_border_style, user_id:me.id, time:new Date().toISOString(), comments:0, views:0 }
       homeStateCache = homeStateCache ? { ...homeStateCache, posts: [newPost, ...(homeStateCache.posts || []).filter(p => p.id !== newPost.id)], totalPosts: (homeStateCache.totalPosts || 0) + 1 } : { data:null, posts:[newPost], totalPosts:1, scrollY:0 }
@@ -905,7 +998,8 @@ function NewPost({ me }) {
       navigate(`/post/${newPost.id}`)
     } catch (e) { setErr(e.message); notify(e.message, 'error') } finally { setSaving(false) }
   }
-  return <div className="main-content"><div className="card"><div className="card-header"><h3><i className="fas fa-pen" /> 发布帖子</h3></div><div className="card-body">{err && <div className="alert alert-error">{err}</div>}<form onSubmit={submit}><div className="form-group"><label className="form-label">标题</label><input className="form-input" required maxLength={120} value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入标题" disabled={saving} /></div><div className="form-group"><label className="form-label">内容</label><textarea className="form-textarea" required maxLength={10000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入内容" style={{ minHeight: 220 }} disabled={saving} /></div><button className="btn btn-primary" disabled={saving}><i className={`fas ${saving ? 'fa-spinner fa-spin' : 'fa-paper-plane'}`} /> {saving ? '发布中' : '发布'}</button></form></div></div></div>
+  if (loading) return <DetailSkeleton />
+  return <div className="main-content"><div className="card"><div className="card-header"><h3><i className="fas fa-pen" /> {editId ? '编辑帖子' : '发布帖子'}</h3></div><div className="card-body">{err && <div className="alert alert-error">{err}</div>}<form onSubmit={submit}><div className="form-group"><label className="form-label">标题</label><input className="form-input" required maxLength={120} value={title} onChange={e => setTitle(e.target.value)} placeholder="请输入标题" disabled={saving} /></div><div className="form-group"><label className="form-label">内容</label><textarea className="form-textarea" required maxLength={10000} value={content} onChange={e => setContent(e.target.value)} placeholder="请输入内容" style={{ minHeight: 220 }} disabled={saving} /></div><button className="btn btn-primary" disabled={saving}><i className={`fas ${saving ? 'fa-spinner fa-spin' : editId ? 'fa-save' : 'fa-paper-plane'}`} /> {saving ? '保存中' : editId ? '保存修改' : '发布'}</button></form></div></div></div>
 }
 
 function renderContent(content = '') {
@@ -1126,15 +1220,16 @@ function CommentMenuPortal({ anchorRef, open, onClose, canEdit, canDelete, busy,
 }
 
 
-function PostMoreMenuPortal({ anchorRef, open, onClose, onShare, onReport }) {
+function PostMoreMenuPortal({ anchorRef, open, onClose, onShare, onReport, canManage = false, busy = false, onEdit, onRemove }) {
   const [pos, setPos] = useState(null)
   useLayoutEffect(() => {
     if (!open || !anchorRef.current) return
     const update = () => {
       const r = anchorRef.current.getBoundingClientRect()
-      const width = 178
+      const width = 188
+      const menuH = canManage ? 148 : 86
       const left = Math.min(window.innerWidth - width - 10, Math.max(10, r.right - width))
-      const top = Math.min(window.innerHeight - 70, r.bottom + 8)
+      const top = Math.min(window.innerHeight - menuH - 10, r.bottom + 8)
       setPos({ left, top })
     }
     update()
@@ -1156,10 +1251,12 @@ function PostMoreMenuPortal({ anchorRef, open, onClose, onShare, onReport }) {
       document.removeEventListener('touchstart', close)
       document.removeEventListener('keydown', esc)
     }
-  }, [open, anchorRef, onClose])
+  }, [open, anchorRef, onClose, canManage])
   if (!open || !pos) return null
   return createPortal(
     <div className="comment-menu global-post-menu" style={{ left: pos.left, top: pos.top }}>
+      {canManage && <button type="button" onClick={onEdit}><i className="fas fa-pen" /> 编辑帖子</button>}
+      {canManage && <button type="button" disabled={busy} className="danger-link" onClick={onRemove}><i className="fas fa-trash" /> 删除帖子</button>}
       <button type="button" onClick={onShare}><i className="fas fa-share-nodes" /> 分享 / 复制链接</button>
       <button type="button" onClick={onReport}><i className="fas fa-flag" /> 举报帖子</button>
     </div>,
@@ -1320,6 +1417,19 @@ function PostDetail({ id, me }) {
     setPostMenuOpen(false)
     copyText(absoluteUrl(`/post/${id}`), '帖子链接已复制')
   }
+  async function deletePost() {
+    if (!data?.post) return
+    const p = data.post
+    const canManage = me && (me.role === 'admin' || String(me.id) === String(p.user_id))
+    if (!canManage) return notify('无权删除这个帖子', 'error')
+    if (!confirm('确定删除这个帖子吗？相关评论也会一起删除。')) return
+    try {
+      await api(`/api/posts/${id}`, { method:'DELETE' })
+      if (homeStateCache?.posts) homeStateCache.posts = homeStateCache.posts.filter(x => String(x.id) !== String(id))
+      notify('帖子已删除', 'success')
+      navigate('/')
+    } catch(e) { notify(e.message, 'error') }
+  }
   async function reportContent(targetType, targetId) {
     if (!me) return navigate('/login')
     const reason = prompt('举报原因（例如：广告、辱骂、违法、隐私泄露）', '违规内容')
@@ -1398,7 +1508,7 @@ function PostDetail({ id, me }) {
       <div className="main-post-controls">
         <button type="button" className="main-post-reply-trigger reply create" title={me ? '回复楼主' : '登录后回复'} aria-label={me ? '回复楼主' : '登录后回复'} onClick={() => startReply(null)}><i className="fas fa-reply" /></button>
         <button ref={postMoreBtnRef} type="button" className="main-post-more-trigger more-toggle" title="更多" aria-label="更多" aria-expanded={postMenuOpen} onClick={() => setPostMenuOpen(v => !v)}><i className="fas fa-ellipsis" /></button>
-        <PostMoreMenuPortal anchorRef={postMoreBtnRef} open={postMenuOpen} onClose={() => setPostMenuOpen(false)} onShare={sharePost} onReport={() => { setPostMenuOpen(false); reportContent('post', p.id) }} />
+        <PostMoreMenuPortal anchorRef={postMoreBtnRef} open={postMenuOpen} onClose={() => setPostMenuOpen(false)} canManage={Boolean(me && (me.role === 'admin' || String(me.id) === String(p.user_id)))} onEdit={() => { setPostMenuOpen(false); navigate(`/post/${p.id}/edit`) }} onRemove={() => { setPostMenuOpen(false); deletePost() }} onShare={sharePost} onReport={() => { setPostMenuOpen(false); reportContent('post', p.id) }} />
       </div>
     </div>
 
@@ -1424,12 +1534,13 @@ function PostDetail({ id, me }) {
 }
 
 
-function ArticleImageCropUploader({ onUpload, buttonLabel = '上传并裁剪图片', title = '上传并裁剪图片', buttonClass = 'btn btn-sm btn-secondary' }) {
+function ArticleImageCropUploader({ onUpload, buttonLabel = '上传图片', title = '上传文章图片', buttonClass = 'btn btn-sm btn-secondary' }) {
   const [open, setOpen] = useState(false)
   const [file, setFile] = useState(null)
   const [preview, setPreview] = useState('')
   const [busy, setBusy] = useState(false)
   const [ready, setReady] = useState(false)
+  const [cropEnabled, setCropEnabled] = useState(false)
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const imgRef = useRef(null)
@@ -1515,16 +1626,31 @@ function ArticleImageCropUploader({ onUpload, buttonLabel = '上传并裁剪图�
     if (!file) return notify('请先选择图片', 'error')
     setBusy(true)
     try {
-      await onUpload(file, cropParams())
-      notify('图片已上传到素材库', 'success')
-      setOpen(false); setFile(null); setReady(false); if (preview) URL.revokeObjectURL(preview); setPreview('')
+      await onUpload(file, cropEnabled ? cropParams() : null)
+      notify(cropEnabled ? '图片已裁剪并上传到素材库' : '原图已上传到素材库', 'success')
+      setOpen(false); setFile(null); setReady(false); setCropEnabled(false); if (preview) URL.revokeObjectURL(preview); setPreview('')
     } catch(e) { notify(e.message, 'error') } finally { setBusy(false) }
   }
   const base = ready ? getContainSize() : { width:stageSize, height:stageSize }
   const minZoom = ready ? minScaleFor(base) : 1
   const maxZoom = ready ? maxScaleFor(base) : 3
   const imageStyle = { width:base.width, height:base.height, transform:`translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` }
-  const modal = open ? createPortal(<div className="modal-mask full-avatar-mask global-avatar-crop-layer" onClick={() => setOpen(false)}><div className="avatar-modal avatar-crop-modal article-crop-modal" onClick={e => e.stopPropagation()}><h3><i className="fas fa-crop-simple" /> {title}</h3><div className="drop-zone" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); pick(e.dataTransfer.files?.[0]) }}><input type="file" accept="image/*" onChange={e => pick(e.target.files?.[0])} /><p>点击选择或拖入图片</p><small>拖动图片调整位置，用滑块缩放；上传后会立即出现在右侧素材库</small></div>{preview && <div className="crop-stage" onMouseDown={startDrag} onTouchStart={startDrag}><img ref={imgRef} className="crop-image" src={preview} alt="裁剪" onLoad={fitImage} draggable="false" style={imageStyle} /><div className="crop-dim crop-dim-top" /><div className="crop-dim crop-dim-bottom" /><div className="crop-dim crop-dim-left" /><div className="crop-dim crop-dim-right" /><div className="crop-box article-crop-box" /></div>}{preview && <div className="crop-controls single"><label>缩放 <input type="range" min={minZoom} max={maxZoom} step="0.01" value={Math.max(minZoom, Math.min(maxZoom, scale))} onChange={e => setZoom(e.target.value)} /></label></div>}<div className="admin-actions"><button className="btn btn-primary" disabled={busy || !file || !ready} onClick={upload}>{busy ? '上传中' : '确认上传'}</button><button className="btn btn-secondary" onClick={() => setOpen(false)}>取消</button></div></div></div>, document.body) : null
+  const modal = open ? createPortal(
+    <div className="modal-mask full-avatar-mask global-avatar-crop-layer" onClick={() => setOpen(false)}>
+      <div className="avatar-modal avatar-crop-modal article-crop-modal" onClick={e => e.stopPropagation()}>
+        <h3><i className={`fas ${cropEnabled ? 'fa-crop-simple' : 'fa-image'}`} /> {title}</h3>
+        <div className="drop-zone" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); pick(e.dataTransfer.files?.[0]) }}>
+          <input type="file" accept="image/*" onChange={e => pick(e.target.files?.[0])} />
+          <p>点击选择或拖入图片</p>
+          <small>默认保留原图上传；需要截取局部时再开启裁剪。</small>
+        </div>
+        {preview && <label className="crop-toggle"><input type="checkbox" checked={cropEnabled} onChange={e => setCropEnabled(e.target.checked)} /> 裁剪后上传（可选）</label>}
+        {preview && !cropEnabled && <div className="article-upload-preview"><img src={preview} alt="原图预览" /><small>当前将直接上传原图，不会裁掉边缘或正文截图。</small></div>}
+        {preview && cropEnabled && <div className="crop-stage" onMouseDown={startDrag} onTouchStart={startDrag}><img ref={imgRef} className="crop-image" src={preview} alt="裁剪" onLoad={fitImage} draggable="false" style={imageStyle} /><div className="crop-dim crop-dim-top" /><div className="crop-dim crop-dim-bottom" /><div className="crop-dim crop-dim-left" /><div className="crop-dim crop-dim-right" /><div className="crop-box article-crop-box" /></div>}
+        {preview && cropEnabled && <div className="crop-controls single"><label>缩放 <input type="range" min={minZoom} max={maxZoom} step="0.01" value={Math.max(minZoom, Math.min(maxZoom, scale))} onChange={e => setZoom(e.target.value)} /></label></div>}
+        <div className="admin-actions"><button className="btn btn-primary" disabled={busy || !file || (cropEnabled && !ready)} onClick={upload}>{busy ? '上传中' : (cropEnabled ? '裁剪并上传' : '上传原图')}</button><button className="btn btn-secondary" onClick={() => setOpen(false)}>取消</button></div>
+      </div>
+    </div>, document.body) : null
   return <><button type="button" className={buttonClass} onClick={() => setOpen(true)}><i className="fas fa-image" /> {buttonLabel}</button>{modal}</>
 }
 
@@ -2196,38 +2322,88 @@ function MarketPage({ me, setMe }) {
 }
 
 function ChannelsPage() {
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(() => channelsStateCache?.data || null)
   const [err, setErr] = useState('')
   useEffect(() => {
     document.title = '频道 - 泓聊社区'
     let alive = true
-    const loadChannels = () => api('/api/channels').then(d => alive && setData(d)).catch(e => { if (alive) { setErr(e.message); if (e.message === '请先登录') clearInterval(timer) } })
+    const loadChannels = () => api('/api/channels').then(d => { if (alive) { setData(d); channelsStateCache = { ...(channelsStateCache || {}), data:d } } }).catch(e => { if (alive) { setErr(e.message); if (e.message === '请先登录') clearInterval(timer) } })
     loadChannels()
     const timer = setInterval(() => { if (!document.hidden && !err) loadChannels() }, 15000)
     return () => { alive = false; clearInterval(timer) }
   }, [])
+  useLayoutEffect(() => {
+    if (!data) return
+    const targetSlug = channelsStateCache?.clickedSlug
+    const targetTop = channelsStateCache?.clickedTop
+    const fallbackY = channelsStateCache?.scrollY || 0
+    if (targetSlug && Number.isFinite(targetTop)) {
+      const el = document.querySelector(`[data-channel-slug="${CSS.escape(String(targetSlug))}"]`)
+      if (el) {
+        const delta = el.getBoundingClientRect().top - targetTop
+        instantScrollTo(Math.max(0, window.scrollY + delta))
+        delete channelsStateCache.clickedSlug; delete channelsStateCache.clickedTop; channelsStateCache.scrollY = window.scrollY
+      }
+    } else if (fallbackY) instantScrollTo(fallbackY)
+    const saveScroll = () => {
+      if (location.pathname === '/channels') channelsStateCache = { ...(channelsStateCache || {}), data, scrollY: window.scrollY }
+    }
+    window.addEventListener('scroll', saveScroll, { passive:true })
+    return () => { saveScroll(); window.removeEventListener('scroll', saveScroll) }
+  }, [data])
+  function rememberChannelClick(ch, e) {
+    const card = e.currentTarget
+    channelsStateCache = { ...(channelsStateCache || {}), data, scrollY:window.scrollY, clickedSlug:ch.slug, clickedTop:card.getBoundingClientRect().top }
+  }
   if (!data && !err) return <HomeSkeleton />
-  return <><PageChrome /><div className="main-content"><div className="card animate-fadeInUp"><div className="card-header"><h3><i className="fas fa-broadcast-tower" style={{ color: 'var(--primary)' }} /> 频道</h3></div>{err && <div className="card-body"><div className="alert alert-error">{err}</div></div>}<div className="channel-grid">{data?.items?.length ? data.items.map(ch => <a className="channel-card" href={`/channels/${ch.slug}`} key={ch.id}><div className="channel-icon"><i className="fas fa-broadcast-tower" /></div><div><h3>{ch.name}</h3><p>{ch.description || '管理员频道'}</p><span>{ch.post_count || 0} 条内容 · {ch.mode === 'api' ? '接口对接' : '手动发布'}</span></div></a>) : <div className="empty-state"><i className="fas fa-satellite-dish" /><p>暂无频道</p></div>}</div></div></div></>
+  return <><PageChrome /><div className="main-content"><div className="card animate-fadeInUp"><div className="card-header"><h3><i className="fas fa-broadcast-tower" style={{ color: 'var(--primary)' }} /> 频道</h3></div>{err && <div className="card-body"><div className="alert alert-error">{err}</div></div>}<div className="channel-grid">{data?.items?.length ? data.items.map(ch => <a className="channel-card" href={`/channels/${ch.slug}`} key={ch.id} data-channel-slug={ch.slug} onClick={e => rememberChannelClick(ch, e)}><div className="channel-icon"><i className="fas fa-broadcast-tower" /></div><div><h3>{ch.name}</h3><p>{ch.description || '管理员频道'}</p><span>{ch.post_count || 0} 条内容 · {ch.mode === 'api' ? '接口对接' : '手动发布'}</span></div></a>) : <div className="empty-state"><i className="fas fa-satellite-dish" /><p>暂无频道</p></div>}</div></div></div></>
 }
 
 function ChannelDetail({ slug }) {
-  const [data, setData] = useState(null)
+  const cached = channelDetailStateCache.get(slug)
+  const [data, setData] = useState(() => cached?.data || null)
   const [err, setErr] = useState('')
   useEffect(() => {
     let alive = true
-    setData(null); setErr('')
-    const loadChannelPosts = (silent = false) => api(`/api/channels/${slug}/posts`).then(d => { if (alive) { setData(d); document.title = `${d.channel.name} - 频道` } }).catch(e => { if (alive && !silent) setErr(e.message) })
+    if (!channelDetailStateCache.get(slug)?.data) setData(null)
+    setErr('')
+    const loadChannelPosts = (silent = false) => api(`/api/channels/${slug}/posts`).then(d => { if (alive) { setData(d); channelDetailStateCache.set(slug, { ...(channelDetailStateCache.get(slug) || {}), data:d }); document.title = `${d.channel.name} - 频道` } }).catch(e => { if (alive && !silent) setErr(e.message) })
     loadChannelPosts(false)
     const timer = setInterval(() => { if (!document.hidden) loadChannelPosts(true) }, 10000)
     return () => { alive = false; clearInterval(timer) }
   }, [slug])
+  useLayoutEffect(() => {
+    if (!data) return
+    const cache = channelDetailStateCache.get(slug) || {}
+    const targetId = cache.clickedPostId
+    const targetTop = cache.clickedPostTop
+    const fallbackY = cache.scrollY || 0
+    if (targetId && Number.isFinite(targetTop)) {
+      const el = document.querySelector(`[data-channel-post-id="${targetId}"]`)
+      if (el) {
+        const delta = el.getBoundingClientRect().top - targetTop
+        instantScrollTo(Math.max(0, window.scrollY + delta))
+        delete cache.clickedPostId; delete cache.clickedPostTop; cache.scrollY = window.scrollY
+        channelDetailStateCache.set(slug, cache)
+      }
+    } else if (fallbackY) instantScrollTo(fallbackY)
+    const saveScroll = () => {
+      if (location.pathname === `/channels/${slug}`) channelDetailStateCache.set(slug, { ...(channelDetailStateCache.get(slug) || {}), data, scrollY: window.scrollY })
+    }
+    window.addEventListener('scroll', saveScroll, { passive:true })
+    return () => { saveScroll(); window.removeEventListener('scroll', saveScroll) }
+  }, [slug, data])
+  function rememberChannelPostClick(p, e) {
+    const row = e.currentTarget.closest('[data-channel-post-id]') || e.currentTarget
+    channelDetailStateCache.set(slug, { ...(channelDetailStateCache.get(slug) || {}), data, scrollY:window.scrollY, clickedPostId:p.id, clickedPostTop:row.getBoundingClientRect().top })
+  }
   if (!data && !err) return <HomeSkeleton />
   if (err) return <><PageChrome /><div className="main-content"><div className="alert alert-error">{err}</div></div></>
   return <><PageChrome /><div className="main-content"><div className="detail-wrap">
     <div className="channel-hero card"><div className="card-body"><span className="channel-pill">频道</span><h1>{data.channel.name}</h1><p>{data.channel.description || '频道内容由管理员发布，用户可浏览和评论。'}</p></div></div>
     <div className="card"><div className="card-header"><h3><i className="fas fa-list" /> 最新内容</h3></div>
-      {data.items.length ? data.items.map((p, idx) => <div className="post-item channel-post-row" key={p.id}>
-        <a className="channel-post-main" href={`/channel-post/${p.id}`}><div className="post-title">{p.title}</div><div className="post-preview channel-preview">{channelPreviewText(p.title, p.preview)}</div></a>
+      {data.items.length ? data.items.map((p, idx) => <div className="post-item channel-post-row" key={p.id} data-channel-post-id={p.id}>
+        <a className="channel-post-main" href={`/channel-post/${p.id}`} onClick={e => rememberChannelPostClick(p, e)}><div className="post-title">{p.title}</div><div className="post-preview channel-preview">{channelPreviewText(p.title, p.preview)}</div></a>
         <div className="post-meta"><span><i className="fas fa-user-shield" /> {p.author_name || '管理员'}</span><span><i className="far fa-clock" /> {relativeTime(p.time)}</span><span><i className="far fa-comment" /> {p.comments || 0}</span><span><i className="far fa-eye" /> {p.views || 0}</span>{p.external_url && <a className="source-link inline-source" href={p.external_url} target="_blank" rel="noreferrer"><i className="fas fa-arrow-up-right-from-square" /> {sourceLinkLabel(p.external_url)}</a>}</div>
       </div>) : <div className="empty-state"><i className="fas fa-inbox" /><p>这个频道暂时没有内容</p></div>}
     </div>
@@ -2262,6 +2438,7 @@ function AdminArticles({ data, draft, setDraft, run }) {
   const initialAssets = data?.assets || []
   const [localAssets, setLocalAssets] = useState(initialAssets)
   const [assetMeta, setAssetMeta] = useState({ total:data?.assets_total || initialAssets.length, hasMore:Boolean(data?.assets_has_more), loading:false })
+  const [previewAsset, setPreviewAsset] = useState(null)
   useEffect(() => { setLocalAssets(initialAssets); setAssetMeta({ total:data?.assets_total || initialAssets.length, hasMore:Boolean(data?.assets_has_more), loading:false }) }, [data])
   const assets = localAssets
   const emptyArticle = { title:'', slug:'', category_id: categories[0]?.id || '', summary:'', cover_image:'', content_markdown:'', status:'draft' }
@@ -2296,13 +2473,16 @@ function AdminArticles({ data, draft, setDraft, run }) {
   }
   const saveCategory = () => run(() => api(editingCat ? `/api/admin/article-categories/${cat.id}` : '/api/admin/article-categories', { method: editingCat ? 'PUT' : 'POST', body: JSON.stringify({ ...cat, sort_order:Number(cat.sort_order || 0), enabled:cat.enabled !== false }) }).then(() => setDraft({ ...draft, articleCategory: emptyCat })))
   const saveArticle = (status = article.status || 'draft') => run(() => api(editingArticle ? `/api/admin/articles/${article.id}` : '/api/admin/articles', { method: editingArticle ? 'PUT' : 'POST', body: JSON.stringify({ ...article, category_id: article.category_id ? Number(article.category_id) : null, status }) }).then(() => setDraft({ ...draft, article: emptyArticle })))
-  const insertAsset = asset => setDraft({ ...draft, article: { ...article, content_markdown: `${article.content_markdown || ''}\n\n![${asset.alt_text || asset.original_name || '图片'}](${asset.url})\n` } })
+  const assetMarkdown = asset => `![${asset.alt_text || asset.original_name || '图片'}](${asset.url})`
+  const copyAsset = asset => copyText(assetMarkdown(asset), '图片 Markdown 已复制')
+  const previewModal = previewAsset ? createPortal(<div className="modal-mask material-preview-mask" onClick={() => setPreviewAsset(null)}><div className="avatar-modal material-preview-modal" onClick={e => e.stopPropagation()}><div className="material-preview-head"><h3><i className="fas fa-image" /> 图片预览</h3><button className="btn btn-sm btn-secondary" onClick={() => setPreviewAsset(null)}>关闭</button></div><img src={previewAsset.url} alt={previewAsset.alt_text || previewAsset.original_name || '素材图片'} /><div className="material-preview-foot"><span>{previewAsset.original_name || previewAsset.filename}</span><span>{previewAsset.width}×{previewAsset.height}</span><button className="btn btn-sm btn-primary" onClick={() => copyAsset(previewAsset)}>复制 Markdown</button></div></div></div>, document.body) : null
   return <div className="admin-card article-admin"><div className="admin-card-head"><h3><i className="fas fa-book-open" /> 文章管理</h3><div className="admin-actions"><span className="storage-pill">社区本地图床</span><span className="storage-pill muted">第三方图床预留</span></div></div>
     <div className="article-admin-grid">
       <section className="article-editor-panel"><h3>{editingArticle ? '编辑文章' : '发布文章'}</h3><div className="admin-create article-create"><input className="form-input article-title-input" placeholder="文章标题" value={article.title || ''} onChange={e => setDraft({ ...draft, article:{ ...article, title:e.target.value } })} /><select className="form-select" value={article.category_id || ''} onChange={e => setDraft({ ...draft, article:{ ...article, category_id:e.target.value } })}><option value="">选择分类</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select><input className="form-input" placeholder="slug，可留空自动生成" value={article.slug || ''} onChange={e => setDraft({ ...draft, article:{ ...article, slug:e.target.value } })} /><textarea className="form-textarea article-summary" placeholder="摘要（可留空自动截取）" value={article.summary || ''} onChange={e => setDraft({ ...draft, article:{ ...article, summary:e.target.value } })} /><MarkdownEditor value={article.content_markdown || ''} onChange={v => setDraft({ ...draft, article:{ ...article, content_markdown:v } })} onUpload={uploadAsset} /><div className="admin-actions"><button className="btn btn-secondary" disabled={!article.title?.trim() || !article.content_markdown?.trim()} onClick={() => saveArticle('draft')}>保存草稿</button><button className="btn btn-primary" disabled={!article.title?.trim() || !article.content_markdown?.trim()} onClick={() => saveArticle('published')}>发布文章</button>{editingArticle && <button className="btn btn-secondary" onClick={() => setDraft({ ...draft, article:emptyArticle })}>取消编辑</button>}</div></div></section>
-      <aside className="material-library"><div className="material-head"><h3><i className="fas fa-images" /> 素材库</h3><small>{assets.length}/{assetMeta.total || assets.length}</small></div><div className="form-hint">新上传图片会显示在最上方；素材很多时向下滚动后点“加载更多”。</div><div className="material-grid">{assets.map(a => <div className="material-card" key={a.id}><img src={a.url} alt="" loading="lazy" /><small>{a.width}×{a.height}</small><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => insertAsset(a)}>插入正文</button></div></div>)}{!assets.length && <div className="empty-state material-empty"><i className="fas fa-image" /><p>暂无素材</p></div>}</div>{assetMeta.hasMore && <button className="btn btn-secondary material-load-more" disabled={assetMeta.loading} onClick={loadMoreAssets}>{assetMeta.loading ? '加载中...' : '加载更多图片'}</button>}</aside>
+      <aside className="material-library"><div className="material-head"><h3><i className="fas fa-images" /> 素材库</h3><small>{assets.length}/{assetMeta.total || assets.length}</small></div><div className="form-hint">点击图片查看大图；按钮只复制 Markdown，不会自动改正文。</div><div className="material-grid">{assets.map(a => <div className="material-card" key={a.id}><button type="button" className="material-thumb-btn" onClick={() => setPreviewAsset(a)} title="查看图片"><img src={a.url} alt="" loading="lazy" /></button><small>{a.width}×{a.height}</small><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => copyAsset(a)}>复制 Markdown</button></div></div>)}{!assets.length && <div className="empty-state material-empty"><i className="fas fa-image" /><p>暂无素材</p></div>}</div>{assetMeta.hasMore && <button className="btn btn-secondary material-load-more" disabled={assetMeta.loading} onClick={loadMoreAssets}>{assetMeta.loading ? '加载中...' : '加载更多图片'}</button>}</aside>
     </div>
     <div className="article-admin-grid lower"><section><h3>分类管理</h3><div className="admin-create category-create"><input className="form-input" placeholder="分类名，如新手入门" value={cat.name || ''} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, name:e.target.value, slug:cat.slug || e.target.value.toLowerCase().replace(/\s+/g,'-') } })} /><input className="form-input" placeholder="slug" value={cat.slug || ''} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, slug:e.target.value } })} /><input className="form-input" type="number" placeholder="排序" value={cat.sort_order ?? 0} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, sort_order:e.target.value } })} /><textarea className="form-textarea" placeholder="分类说明" value={cat.description || ''} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, description:e.target.value } })} /><label className="channel-enabled"><input type="checkbox" checked={cat.enabled !== false} onChange={e => setDraft({ ...draft, articleCategory:{ ...cat, enabled:e.target.checked } })} /> 启用</label><button className="btn btn-primary" disabled={!cat.name?.trim()} onClick={saveCategory}>{editingCat ? '保存分类' : '创建分类'}</button>{editingCat && <button className="btn btn-secondary" onClick={() => setDraft({ ...draft, articleCategory:emptyCat })}>取消</button>}</div>{categories.map(c => <div className="admin-row" key={c.id}><div><b>{c.name}</b><p>{c.slug} · {c.enabled ? '启用' : '停用'} · {c.article_count || 0} 篇</p><small>{c.description || '无说明'}</small></div><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => setDraft({ ...draft, articleCategory:{ ...c } })}>编辑</button><button className="btn btn-sm btn-danger" onClick={() => confirm('确定删除/停用分类？') && run(() => api(`/api/admin/article-categories/${c.id}`, { method:'DELETE' }))}>删除</button></div></div>)}</section><section><h3>文章列表</h3>{articles.map(a => <div className="admin-row" key={a.id}><div><b>{a.title}</b><p>{a.category_name || '未分类'} · {a.status === 'published' ? '已发布' : '草稿'} · 浏览 {a.views || 0} · {displayTime(a.updated_at)}</p><small>{textExcerpt(a.summary || a.content_markdown || '', 100)}</small></div><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => setDraft({ ...draft, article:{ ...a, category_id:a.category_id || '' } })}>编辑</button>{a.status === 'published' && <a className="btn btn-sm btn-secondary" href={`/articles/${a.slug}`}>查看</a>}<button className="btn btn-sm btn-secondary" onClick={() => run(() => api(`/api/admin/articles/${a.id}/status`, { method:'PATCH', body:JSON.stringify({ status:a.status === 'published' ? 'draft' : 'published' }) }))}>{a.status === 'published' ? '转草稿' : '发布'}</button><button className="btn btn-sm btn-danger" onClick={() => confirm('确定删除文章？') && run(() => api(`/api/admin/articles/${a.id}`, { method:'DELETE' }))}>删除</button></div></div>)}</section></div>
+    {previewModal}
   </div>
 }
 
@@ -2386,6 +2566,7 @@ function App() {
     if (pathname === '/login') return <AuthPage mode="login" setMe={setMe} site={site} />
     if (pathname === '/register') return <AuthPage mode="register" setMe={setMe} site={site} />
     if (pathname === '/new') return <NewPost me={me} />
+    if (pathname.startsWith('/post/') && pathname.endsWith('/edit')) return <NewPost me={me} editId={pathname.split('/')[2]} />
     if (pathname === '/channels') return <ChannelsPage />
     if (pathname === '/articles') return <ArticlesPage route={path} />
     if (pathname.startsWith('/articles/')) return <ArticleDetail id={pathname.split('/')[2]} />
@@ -2397,7 +2578,7 @@ function App() {
     if (pathname.startsWith('/user/')) return <UserPage id={pathname.split('/')[2]} me={me} setMe={setMe} />
     if (pathname === '/games') return <SimpleSection type="games" />
     if (pathname === '/music') return <SimpleSection type="music" />
-    return <Home />
+    return <Home me={me} />
   }, [path, me, site])
   const isAuth = new URL(path, location.origin).pathname === '/login' || new URL(path, location.origin).pathname === '/register'
   return <>{isAuth ? page : <><Nav me={me} setMe={setMe} path={path} site={site} />{page}<SiteFooter site={site} /></>}<ToastHost /></>

@@ -2511,6 +2511,54 @@ async def create_post(payload: PostIn, authorization: str | None = Header(defaul
     return {"ok": True, "id": post_id, "post": post, "current_points": int(current_points or 0)}
 
 
+@app.patch("/api/posts/{post_id}")
+async def update_post(post_id: int, payload: PostIn, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    title = payload.title.strip()
+    content = payload.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="标题和内容不能为空")
+    with db() as conn:
+        row = conn.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="帖子不存在")
+        if row["user_id"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="无权编辑这个帖子")
+        conn.execute("UPDATE posts SET title=?, content=?, updated_at=? WHERE id=?", (title, content, now(), post_id))
+        update_hot_rank(conn, post_id, inject_bonus=False)
+        post = fetch_post_dict(conn, post_id)
+    await feed_realtime_manager.broadcast({"type": "post_updated", "post_id": post_id, "post": post})
+    return {"ok": True, "post": post}
+
+
+@app.delete("/api/posts/{post_id}")
+async def delete_post(post_id: int, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    with db() as conn:
+        row = conn.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
+        if not row:
+            return {"ok": True}
+        if row["user_id"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="无权删除这个帖子")
+        comment_ids = [r["id"] for r in conn.execute("SELECT id FROM comments WHERE post_id=?", (post_id,)).fetchall()]
+        if comment_ids:
+            placeholders = ",".join("?" for _ in comment_ids)
+            conn.execute(f"DELETE FROM point_ledger WHERE ref_type='comment' AND ref_id IN ({placeholders})", comment_ids)
+        conn.execute("DELETE FROM comment_notifications WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM email_notification_log WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM content_reports WHERE post_id=? OR (target_type='post' AND target_id=?)", (post_id, post_id))
+        if comment_ids:
+            placeholders = ",".join("?" for _ in comment_ids)
+            conn.execute(f"DELETE FROM content_reports WHERE target_type='comment' AND target_id IN ({placeholders})", comment_ids)
+        conn.execute("DELETE FROM point_ledger WHERE ref_type='post' AND ref_id=?", (post_id,))
+        conn.execute("DELETE FROM comments WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM post_unique_views WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM posts WHERE id=?", (post_id,))
+        refresh_user_points(conn, row["user_id"])
+    await feed_realtime_manager.broadcast({"type": "post_deleted", "post_id": post_id})
+    return {"ok": True}
+
+
 @app.get("/api/posts/{post_id}")
 def get_post(post_id: int, request: Request, authorization: str | None = Header(default=None)):
     viewer = current_user(authorization)
