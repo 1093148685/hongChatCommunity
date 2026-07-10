@@ -828,27 +828,24 @@
             .navbar-menu { flex-wrap: wrap; width: 100%; gap: 6px; }
             .nav-link, .nav-btn { padding: 6px 10px; font-size: .82rem; }
             .main-content { padding: 14px 10px; }
-            .search-container form { gap: 8px !important; }
-            .search-input-wrap { min-width: 100%; }
-            .search-select { flex: 1; min-width: 0; }
+            .search-container { padding:12px; border-radius:14px; border-color:#dfe7f0; background:rgba(255,255,255,.96); }
+            .search-container form, .article-search-card, .market-search-form, .music-search-form { display:grid !important; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px !important; width:100%; flex-wrap:initial !important; }
+            .search-input-wrap, .music-input-wrap { grid-column:1 / -1; min-width:0 !important; width:100%; flex:none !important; }
+            .search-input { min-height:42px; border-radius:8px; }
+            .search-select, .music-source-select, .market-category-select { grid-column:1; width:100% !important; min-width:0 !important; height:42px; border-radius:8px; flex:none !important; }
+            .search-container .btn, .music-search-form .music-search-btn, .market-search-container .btn, .article-search-card .btn { grid-column:2; width:auto !important; min-width:92px; height:42px; padding:0 14px; border-radius:8px; white-space:nowrap; flex:none !important; }
+            .music-search-form .music-search-btn span { display:inline; }
             .market-asset-bar { flex-direction:column; align-items:flex-start; padding:14px; }
             .market-actions-block { min-width:0; width:100%; justify-content:flex-start; }
             .market-rules { justify-content:flex-start; }
             .market-balance-block h1 { font-size:1.72rem; }
-            .market-search-container form { flex-direction:column; }
-            .market-search-container .btn { width:100%; }
             .music-page { padding-bottom:86px; }
             .music-page-head { align-items:flex-start; flex-direction:column; gap:8px; }
             .music-page-head h1 { font-size:1.28rem; }
             .music-page-head p { font-size:.88rem; }
             .music-status-chip { padding:6px 10px; font-size:.82rem; }
-            .music-search-container { padding:10px; border-radius:18px; }
-            .music-search-form { flex-direction:row; align-items:center; flex-wrap:nowrap; gap:7px !important; }
-            .music-input-wrap { min-width:0 !important; flex:1 1 auto; }
+            .music-search-container { padding:12px; border-radius:14px; }
             .music-input-wrap .search-input { padding-right:38px; }
-            .music-source-select { width:108px !important; min-width:108px; flex:0 0 108px; font-size:.8rem; padding-left:10px; padding-right:8px; }
-            .music-search-form .music-search-btn { width:38px; height:38px; flex:0 0 38px; padding:0; border-radius:13px; }
-            .music-search-form .music-search-btn span { display:none; }
             .music-search-overlay.is-mobile { left:10px !important; right:10px !important; top:auto !important; bottom:12px !important; width:auto !important; max-height:70dvh !important; border-radius:22px; z-index:18000; }
             .music-overlay-head { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; border-bottom:1px solid #eef2f7; color:#0f172a; font-weight:800; }
             .music-overlay-head:before { content:''; position:absolute; top:6px; left:50%; transform:translateX(-50%); width:38px; height:4px; border-radius:999px; background:#dbe4ef; }
