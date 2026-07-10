@@ -1891,6 +1891,124 @@ function SimpleSection({ type }) {
 }
 
 
+function parseLyrics(text = '') {
+  return String(text || '').split('\n').map(line => {
+    const m = line.match(/\[(\d{2}):(\d{2})\.(\d{2,3})\](.*)/)
+    if (!m) return null
+    const time = Number(m[1]) * 60 + Number(m[2]) + Number(m[3].padEnd(3, '0')) / 1000
+    const value = m[4].trim()
+    return value ? { time, text:value } : null
+  }).filter(Boolean)
+}
+function formatPlayerTime(seconds = 0) {
+  const n = Math.max(0, Math.floor(Number(seconds || 0)))
+  const m = Math.floor(n / 60)
+  const s = String(n % 60).padStart(2, '0')
+  return `${m}:${s}`
+}
+function MusicPage() {
+  const [info, setInfo] = useState(null)
+  const [query, setQuery] = useState('')
+  const [sourceId, setSourceId] = useState('')
+  const [page, setPage] = useState(1)
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [err, setErr] = useState('')
+  const [current, setCurrent] = useState(null)
+  const [lyrics, setLyrics] = useState([])
+  const [lyricIndex, setLyricIndex] = useState(-1)
+  const [duration, setDuration] = useState(0)
+  const [currentTime, setCurrentTime] = useState(0)
+  const audioRef = useRef(null)
+  const searchSeqRef = useRef(0)
+  const searchTimerRef = useRef(null)
+  useEffect(() => { document.title = '音乐 - 泓聊社区'; api('/api/music').then(d => { setInfo(d); setSourceId(String(d?.config?.default_source || d?.sources?.[0]?.id || '')) }).catch(e => setErr(e.message)) }, [])
+  async function runMusicSearch(term, nextPage = 1, append = false) {
+    const q = term.trim()
+    if (!q) { setResults([]); setErr(''); return }
+    const seq = ++searchSeqRef.current
+    setSearching(true); setErr('')
+    try {
+      const src = sourceId || info?.config?.default_source || ''
+      const res = await fetch(`${API_BASE}/api/music/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(src)}&page=${nextPage}&limit=8`)
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json.detail || '搜索失败')
+      if (seq !== searchSeqRef.current) return
+      const items = json.items || []
+      setResults(prev => append ? [...prev, ...items.filter(x => !prev.some(p => p.id === x.id && p.source === x.source))] : items)
+      setPage(nextPage)
+    } catch(e) { if (seq === searchSeqRef.current) setErr(e.message) }
+    finally { if (seq === searchSeqRef.current) setSearching(false) }
+  }
+  function handleMusicInput(value) {
+    setQuery(value)
+    setPage(1)
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    if (!value.trim()) { setResults([]); setErr(''); return }
+    searchTimerRef.current = setTimeout(() => runMusicSearch(value, 1, false), 320)
+  }
+  function submitMusicSearch(e) {
+    e?.preventDefault?.()
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    runMusicSearch(query, 1, false)
+  }
+  async function loadMore() {
+    await runMusicSearch(query, page + 1, true)
+  }
+  async function playSong(song) {
+    setErr('')
+    try {
+      const activeSource = sourceId || song.source || info?.config?.default_source || ''
+      const urlRes = await api(`/api/music/url?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(activeSource)}`)
+      const next = { ...song, url:urlRes.url }
+      setCurrent(next)
+      setCurrentTime(0); setDuration(0); setLyricIndex(-1)
+      try {
+        const lyr = await api(`/api/music/lyric?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(activeSource)}`)
+        setLyrics(parseLyrics(lyr.lyric || lyr.tlyric || ''))
+      } catch { setLyrics([]) }
+      setTimeout(() => audioRef.current?.play().catch(() => {}), 80)
+      api('/api/music/log', { method:'POST', body:JSON.stringify({ action:'play', songName:song.name, songId:song.id, source:song.source, status:'success' }) }).catch(()=>{})
+    } catch(e) { setErr(e.message); notify(e.message, 'error') }
+  }
+  function onTimeUpdate() {
+    const a = audioRef.current
+    if (!a) return
+    const t = a.currentTime || 0
+    setCurrentTime(t); setDuration(a.duration || 0)
+    let idx = -1
+    for (let i = 0; i < lyrics.length; i++) {
+      if (lyrics[i].time <= t) idx = i
+      else break
+    }
+    setLyricIndex(idx)
+  }
+  const progress = duration ? Math.min(100, Math.max(0, currentTime / duration * 100)) : 0
+  return <><PageChrome /><div className="main-content music-page">
+    {err && <div className="alert alert-error">{err}</div>}
+    <div className="search-container music-search-container animate-fadeInUp">
+      <form className="music-search-form" onSubmit={submitMusicSearch}>
+        <div className="search-input-wrap"><i className={`fas ${searching ? 'fa-spinner fa-spin' : 'fa-search'}`} /><input className="search-input" value={query} onChange={e => handleMusicInput(e.target.value)} placeholder="输入歌名 / 歌手..." /></div>
+        <select className="search-select music-source-select" value={sourceId} onChange={e => { setSourceId(e.target.value); if (query.trim()) setTimeout(() => runMusicSearch(query, 1, false), 0) }}>
+          {(info?.sources || []).map(src => <option key={src.id} value={src.id}>{src.name}</option>)}
+        </select>
+        <button type="submit" className="btn btn-primary"><i className="fas fa-search" /> 搜索</button>
+        {query && <button type="button" className="btn btn-secondary" onClick={() => handleMusicInput('')}>清空</button>}
+      </form>
+      {query.trim() && <div className="music-result-panel">
+        {results.length ? results.map(song => <button type="button" className="music-result-row" key={`${song.source}-${song.id}`} onClick={() => playSong(song)}><span><b>{song.name}</b><small>{song.artist} · {song.source}</small></span><i className="fas fa-play" /></button>) : <div className="music-empty-inline">{searching ? '搜索中...' : '暂无匹配歌曲'}</div>}
+        {results.length > 0 && <button type="button" className="music-load-more" onClick={loadMore} disabled={searching}>{searching ? '加载中...' : '加载更多'}</button>}
+      </div>}
+    </div>
+    <section className="music-player-card card animate-fadeInUp">
+      <div className="music-now"><div className="music-disc"><i className={`fas ${current ? 'fa-music' : 'fa-compact-disc'}`} /></div><div><h2>{current?.name || '还没有播放歌曲'}</h2><p>{current ? `${current.artist} · ${current.source}` : '从上方搜索结果里选择一首歌开始播放'}</p></div></div>
+      <audio ref={audioRef} src={current?.url || ''} controls className="music-audio" onTimeUpdate={onTimeUpdate} onLoadedMetadata={onTimeUpdate} />
+      <div className="music-progress"><span>{formatPlayerTime(currentTime)}</span><div><i style={{ width:`${progress}%` }} /></div><span>{formatPlayerTime(duration)}</span></div>
+      <div className="music-lyrics">{lyrics.length ? lyrics.slice(Math.max(0, lyricIndex - 2), lyricIndex + 5).map((l, idx) => <p key={`${l.time}-${idx}`} className={lyrics[lyricIndex]?.time === l.time ? 'active' : ''}>{l.text}</p>) : <p className="muted-lyric">暂无歌词，或歌曲尚未开始播放。</p>}</div>
+    </section>
+  </div></>
+}
+
 function AdminPage({ me }) {
   const tabs = [
     ['overview', '总览', 'fa-chart-line'],
@@ -1904,6 +2022,7 @@ function AdminPage({ me }) {
     ['channels', '频道', 'fa-broadcast-tower'],
     ['articles', '文章', 'fa-book-open'],
     ['market', '泓市场', 'fa-store'],
+    ['music', '音乐', 'fa-music'],
     ['settings', '系统设置', 'fa-gear'],
   ]
   const [tab, setTab] = useState('overview')
@@ -1959,6 +2078,7 @@ function AdminPage({ me }) {
     {tab === 'channels' && <AdminChannels data={data.channels} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'articles' && <AdminArticles data={data.articles} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'market' && <AdminMarket data={data.market} setAdminData={setData} draft={draft} setDraft={setDraft} run={run} />}
+    {tab === 'music' && <AdminMusic data={data.music} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'settings' && <AdminSettings data={data.settings} draft={draft} setDraft={setDraft} run={run} />} 
   </div>
 }
@@ -2202,6 +2322,35 @@ function AdminMarket({ data, setAdminData, draft, setDraft, run }) {
 }
 
 
+function AdminMusic({ data, draft, setDraft, run }) {
+  const sources = data?.sources || []
+  const empty = { name:'', source_code:'netease', base_url:'https://music-api.gdstudio.xyz/api.php', enabled:true, sort_order:0, note:'' }
+  const form = draft.musicSource || empty
+  const editing = Boolean(form.id)
+  const set = (k, v) => setDraft({ ...draft, musicSource: { ...form, [k]: v } })
+  const reset = () => setDraft({ ...draft, musicSource: empty })
+  const edit = src => setDraft({ ...draft, musicSource: { ...src } })
+  const save = async () => {
+    if (!form.name?.trim() || !form.base_url?.trim()) return notify('请填写来源名称和 API 地址', 'error')
+    const payload = { ...form, name:form.name.trim(), source_code:(form.source_code || 'netease').trim(), base_url:form.base_url.trim(), sort_order:Number(form.sort_order || 0), note:(form.note || '').trim() }
+    await run(() => api(editing ? `/api/admin/music/sources/${form.id}` : '/api/admin/music/sources', { method: editing ? 'PUT' : 'POST', body: JSON.stringify(payload) }).then(r => { reset(); return r }))
+  }
+  return <div className="admin-card"><div className="admin-card-head"><h3><i className="fas fa-music" /> 音乐管理</h3><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={reset}>新增来源</button></div></div>
+    <div className="admin-create music-source-create">
+      <input className="form-input" placeholder="来源名称，如 GD Studio · 网易云" value={form.name || ''} onChange={e => set('name', e.target.value)} />
+      <input className="form-input" placeholder="源代码：netease / tencent / kugou" value={form.source_code || ''} onChange={e => set('source_code', e.target.value)} />
+      <input className="form-input" placeholder="API 地址：https://.../api.php" value={form.base_url || ''} onChange={e => set('base_url', e.target.value)} />
+      <input className="form-input" type="number" placeholder="排序" value={form.sort_order ?? 0} onChange={e => set('sort_order', Number(e.target.value || 0))} />
+      <input className="form-input" placeholder="备注（可选）" value={form.note || ''} onChange={e => set('note', e.target.value)} />
+      <label className="channel-enabled"><input type="checkbox" checked={form.enabled !== false} onChange={e => set('enabled', e.target.checked)} /> 启用</label>
+      <div className="admin-actions"><button className="btn btn-primary" onClick={save}>{editing ? '保存来源' : '添加来源'}</button>{editing && <button className="btn btn-secondary" onClick={reset}>取消编辑</button>}</div>
+    </div>
+    <div className="alert alert-info">前台音乐页只展示启用的来源；接口密钥如需扩展请放后端配置，不在前台显示。</div>
+    {sources.length ? sources.map(src => <div className="admin-row" key={src.id}><div><b>{src.name}</b><p>{src.source_code} · {src.enabled ? '启用' : '停用'} · 排序 {src.sort_order}</p><small>{src.base_url}{src.note ? ` · ${src.note}` : ''}</small></div><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => edit(src)}>编辑</button><button className="btn btn-sm btn-danger" onClick={() => confirm('确定删除这个音乐接口来源？') && run(() => api(`/api/admin/music/sources/${src.id}`, { method:'DELETE' }))}>删除</button></div></div>) : <div className="empty-state"><i className="fas fa-music" /><p>暂无音乐接口来源</p></div>}
+  </div>
+}
+
+
 function AdminSettings({ data, draft, setDraft, run }) {
   const s = draft.settings || data?.settings || {}
   const set = (k, v) => setDraft({ ...draft, settings: { ...s, [k]: v } })
@@ -2275,6 +2424,7 @@ function MarketPage({ me, setMe }) {
   const [busy, setBusy] = useState(0)
   const [showOrders, setShowOrders] = useState(false)
   const [marketQuery, setMarketQuery] = useState('')
+  const [marketCategory, setMarketCategory] = useState('all')
   const [activeItem, setActiveItem] = useState(null)
   const load = () => api('/api/market').then(d => { setData(d); document.title = '泓市场 - 泓聊社区' }).catch(e => setErr(e.message))
   useEffect(() => { document.title = '泓市场 - 泓聊社区'; setData(null); setErr(''); load() }, [])
@@ -2320,7 +2470,13 @@ function MarketPage({ me, setMe }) {
   const buttonText = item => !me ? '登录后兑换' : (auditTitles.has(item.title) || pendingAuditItemIds.has(item.id) ? '审核中' : ((data.balance || 0) < item.price ? '泓币不足' : item.stock === 0 ? '已售罄' : '兑换'))
   const disabledItem = item => busy === item.id || !me || item.stock === 0 || (data.balance || 0) < item.price || auditTitles.has(item.title) || pendingAuditItemIds.has(item.id)
   const normalizedMarketQuery = marketQuery.trim().toLowerCase()
-  const marketItems = (data?.items || []).filter(item => !normalizedMarketQuery || [item.title, item.description, item.category].some(v => String(v || '').toLowerCase().includes(normalizedMarketQuery)))
+  const marketCategories = data?.categories?.length ? data.categories : Array.from(new Set((data?.items || []).map(x => x.category).filter(Boolean))).map(value => ({ value, label:value }))
+  const marketCategoryLabels = Object.fromEntries(marketCategories.map(c => [c.value, c.label || c.value]))
+  const marketItems = (data?.items || []).filter(item => {
+    const categoryOk = marketCategory === 'all' || item.category === marketCategory
+    const queryOk = !normalizedMarketQuery || [item.title, item.description, item.category, marketCategoryLabels[item.category]].some(v => String(v || '').toLowerCase().includes(normalizedMarketQuery))
+    return categoryOk && queryOk
+  })
   return <><PageChrome /><div className="main-content market-page">
     <section className="market-asset-bar card animate-fadeInUp">
       <div className="market-balance-block">
@@ -2335,9 +2491,14 @@ function MarketPage({ me, setMe }) {
     </section>
     {err && <div className="alert alert-error">{err}</div>}
     <div className="search-container market-search-container animate-fadeInUp">
-      <form onSubmit={e => e.preventDefault()} style={{ display:'flex', gap:12, width:'100%' }}>
+      <form className="market-search-form" onSubmit={e => e.preventDefault()}>
         <div className="search-input-wrap"><i className="fas fa-search" /><input className="search-input" value={marketQuery} onChange={e => setMarketQuery(e.target.value)} placeholder="搜索商品、权益或装扮..." /></div>
-        {marketQuery && <button type="button" className="btn btn-secondary" onClick={() => setMarketQuery('')}>清空</button>}
+        <select className="search-select market-category-select" value={marketCategory} onChange={e => setMarketCategory(e.target.value)}>
+          <option value="all">全部分类（{data?.items?.length || 0}）</option>
+          {marketCategories.map(cat => <option key={cat.value} value={cat.value}>{cat.label || cat.value}（{(data?.items || []).filter(x => x.category === cat.value).length}）</option>)}
+        </select>
+        <button type="submit" className="btn btn-primary"><i className="fas fa-filter" /> 筛选</button>
+        {(marketQuery || marketCategory !== 'all') && <button type="button" className="btn btn-secondary" onClick={() => { setMarketQuery(''); setMarketCategory('all') }}>重置</button>}
       </form>
     </div>
     <div className="market-grid">{marketItems.length ? marketItems.map(item => <div className="market-card card animate-fadeInUp" key={item.id}><div className="market-icon"><i className={`fas ${item.cover_icon || 'fa-gift'}`} /></div><div className="market-card-body"><h3>{item.title}</h3><p>{item.description}</p><div className="market-meta"><b>{item.price} 泓币</b><span>{item.stock < 0 ? '不限量' : `库存 ${item.stock}`}</span></div><button className="btn btn-primary market-exchange-btn" disabled={disabledItem(item)} onClick={() => setActiveItem(item)}><i className={`fas ${busy === item.id ? 'fa-spinner fa-spin' : auditTitles.has(item.title) || pendingAuditItemIds.has(item.id) ? 'fa-hourglass-half' : 'fa-bag-shopping'}`} /> {buttonText(item)}</button></div></div>) : <div className="card market-empty-card"><div className="empty-state"><i className="fas fa-store-slash" /><p>没有找到匹配商品</p></div></div>}</div>
@@ -2612,7 +2773,7 @@ function App() {
     if (pathname.startsWith('/post/')) return <PostDetail id={pathname.split('/')[2]} me={me} />
     if (pathname.startsWith('/user/')) return <UserPage id={pathname.split('/')[2]} me={me} setMe={setMe} />
     if (pathname === '/games') return <SimpleSection type="games" />
-    if (pathname === '/music') return <SimpleSection type="music" />
+    if (pathname === '/music') return <MusicPage />
     return <Home me={me} />
   }, [path, me, site])
   const isAuth = new URL(path, location.origin).pathname === '/login' || new URL(path, location.origin).pathname === '/register'

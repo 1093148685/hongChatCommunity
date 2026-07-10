@@ -182,6 +182,16 @@ CARD_KEY_CATEGORIES = {ProductCategory.GIFT_GENERAL.value, ProductCategory.COUPO
 MANUAL_PROCESS_CATEGORIES = {ProductCategory.COFFEE_SPONSOR.value, ProductCategory.PERIPHERAL_PHYSICAL.value}
 ALL_PRODUCT_CATEGORIES = DIRECT_EFFECT_CATEGORIES | CARD_KEY_CATEGORIES | MANUAL_PROCESS_CATEGORIES
 CATEGORY_METHOD = {**{c: FulfillmentMethod.DIRECT_EFFECT.value for c in DIRECT_EFFECT_CATEGORIES}, **{c: FulfillmentMethod.CARD_KEY.value for c in CARD_KEY_CATEGORIES}, **{c: FulfillmentMethod.MANUAL_PROCESS.value for c in MANUAL_PROCESS_CATEGORIES}}
+MARKET_CATEGORY_LABELS = {
+    ProductCategory.GIFT_GENERAL.value: "礼物",
+    ProductCategory.COUPON_TICKET.value: "券码",
+    ProductCategory.GAME_ITEM.value: "游戏",
+    ProductCategory.MEMBER_BENEFIT.value: "会员",
+    ProductCategory.THEME_DRESSUP.value: "装扮",
+    ProductCategory.RARE_PERK.value: "稀有",
+    ProductCategory.COFFEE_SPONSOR.value: "赞助",
+    ProductCategory.PERIPHERAL_PHYSICAL.value: "实物",
+}
 LEGACY_CATEGORY_MAP = {
     "virtual": ProductCategory.GIFT_GENERAL.value,
     "profile": ProductCategory.MEMBER_BENEFIT.value,
@@ -338,6 +348,10 @@ def default_settings() -> dict[str, str]:
         "connect_client_secret": "",
         "connect_scope": "openid profile email trust_level",
         "connect_issuer": "https://connect.ccocc.cyou",
+        "music_api_enabled": "1",
+        "music_api_base_url": "https://music-api.gdstudio.xyz/api.php",
+        "music_default_source": "netease",
+        "music_default_bitrate": "320",
         "banners_json": json.dumps(BANNERS, ensure_ascii=False),
     }
 
@@ -361,6 +375,11 @@ def get_settings(conn: sqlite3.Connection, include_secret: bool = False) -> dict
     data["captcha_enabled"] = str(data.get("captcha_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     data["qidao_oauth_enabled"] = str(data.get("qidao_oauth_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     data["connect_oauth_enabled"] = str(data.get("connect_oauth_enabled", "0")) in {"1", "true", "True", "yes", "on"}
+    data["music_api_enabled"] = str(data.get("music_api_enabled", "1")) in {"1", "true", "True", "yes", "on"}
+    try:
+        data["music_default_bitrate"] = int(data.get("music_default_bitrate") or 320)
+    except Exception:
+        data["music_default_bitrate"] = 320
     try:
         data["comment_email_limit_24h"] = int(data.get("comment_email_limit_24h") or 8)
     except Exception:
@@ -721,12 +740,24 @@ def init_db() -> None:
                 FOREIGN KEY(product_id) REFERENCES market_items(id),
                 FOREIGN KEY(order_id) REFERENCES market_orders(id)
             );
+            CREATE TABLE IF NOT EXISTS music_api_sources(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                source_code TEXT NOT NULL DEFAULT 'netease',
+                base_url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                note TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_market_items_category_active ON market_items(category, enabled, id);
             CREATE INDEX IF NOT EXISTS idx_market_orders_user_created ON market_orders(user_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_market_orders_status_created ON market_orders(status, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_card_keys_product_used ON product_card_keys(product_id, is_used, id);
             CREATE INDEX IF NOT EXISTS idx_point_ledger_user_created ON point_ledger(user_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_user_points_available ON user_points(available_points);
+            CREATE INDEX IF NOT EXISTS idx_music_sources_enabled_sort ON music_api_sources(enabled, sort_order, id);
             CREATE INDEX IF NOT EXISTS idx_posts_pinned_created_id ON posts(pinned DESC, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_posts_user_created ON posts(user_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_posts_title ON posts(title);
@@ -858,6 +889,15 @@ def init_db() -> None:
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_oauth_enabled', '0')")
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_scope', 'openid profile email trust_level')")
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_issuer', 'https://connect.ccocc.cyou')")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_music_sources_name ON music_api_sources(name)")
+        conn.execute(
+            """
+            INSERT INTO music_api_sources(name, source_code, base_url, enabled, sort_order, note, created_at, updated_at)
+            SELECT 'GD Studio · 网易云', COALESCE((SELECT value FROM site_settings WHERE key='music_default_source'), 'netease'), COALESCE((SELECT value FROM site_settings WHERE key='music_api_base_url'), 'https://music-api.gdstudio.xyz/api.php'), COALESCE((SELECT value FROM site_settings WHERE key='music_api_enabled'), '1'), 0, '由旧音乐接口配置自动迁移', ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM music_api_sources)
+            """,
+            (now(), now()),
+        )
         conn.execute("UPDATE site_settings SET value=? WHERE key='default_avatar' AND value LIKE 'https://yhdet.top/static/avatars/%'", (DEFAULT_AVATAR,))
         market_seed = [
             ("改名卡", "兑换后提交想修改的新昵称，管理员审核后处理。", 188, 20, ProductCategory.MEMBER_BENEFIT.value, "fa-id-card", '{"request_type":"rename"}'),
@@ -1472,7 +1512,20 @@ class SiteSettingsIn(BaseModel):
     qidao_client_id: str | None = Field(default=None, max_length=200)
     qidao_client_secret: str | None = Field(default=None, max_length=500)
     qidao_scope: str | None = Field(default=None, max_length=200)
+    music_api_enabled: bool | None = None
+    music_api_base_url: str | None = Field(default=None, max_length=500)
+    music_default_source: str | None = Field(default=None, max_length=40)
+    music_default_bitrate: int | None = Field(default=None, ge=64, le=999)
     banners_json: str | None = Field(default=None, max_length=8000)
+
+
+class MusicSourceIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    source_code: str = Field(default='netease', max_length=40)
+    base_url: str = Field(min_length=1, max_length=500)
+    enabled: bool = True
+    sort_order: int = Field(default=0, ge=-9999, le=9999)
+    note: str | None = Field(default='', max_length=500)
 
 
 class NotificationReadIn(BaseModel):
@@ -3080,6 +3133,7 @@ def market_home(authorization: str | None = Header(default=None)):
             "orders": order_dicts,
             "rules": ["发布帖子 +12 泓币", "发表评论 +3 泓币", "卡密自动发放，实物/赞助进入待处理"],
             "guest": not bool(user),
+            "categories": market_categories_payload(),
         }
     return result
 
@@ -3426,7 +3480,7 @@ def admin_market(authorization: str | None = Header(default=None)):
         "items": [{**dict(i), "fulfillment_method": market_item_fulfillment_method(i), "card_key_available": conn.execute("SELECT COUNT(*) FROM product_card_keys WHERE product_id=? AND is_used=0", (i["id"],)).fetchone()[0], "orders_count": conn.execute("SELECT COUNT(*) FROM market_orders WHERE item_id=?", (i["id"],)).fetchone()[0]} for i in items],
         "orders": [{"id": o["id"], "username": o["username"], "item_title": o["item_title"], "price": o["price"], "cost_points": o["cost_points"], "category": o["category"], "status": o["status"], "shipping_info": o["shipping_info"], "payload": o["payload"] if "payload" in o.keys() else "", "delivered_content": o["delivered_content"], "created_at": o["created_at"], "fulfilled_at": o["fulfilled_at"]} for o in orders],
         "ledgers": [{"id": l["id"], "username": l["username"], "delta": l["delta"], "reason": l["reason"], "ref_type": l["ref_type"], "ref_id": l["ref_id"], "created_at": l["created_at"]} for l in ledgers],
-        "categories": [{"value": c, "method": CATEGORY_METHOD[c]} for c in sorted(ALL_PRODUCT_CATEGORIES)],
+        "categories": market_categories_payload(),
     }
 
 
@@ -4175,7 +4229,7 @@ def admin_update_settings(payload: SiteSettingsIn, authorization: str | None = H
         for key, value in data.items():
             if key in {"smtp_password", "qidao_client_secret"} and (value is None or value == "***"):
                 continue
-            if key in {"email_enabled", "guest_access_restricted", "captcha_enabled", "qidao_oauth_enabled"}:
+            if key in {"email_enabled", "guest_access_restricted", "captcha_enabled", "qidao_oauth_enabled", "music_api_enabled"}:
                 value = "1" if value else "0"
             set_setting(conn, key, value)
         updated = get_settings(conn)
@@ -5060,9 +5114,289 @@ def games():
     return {"items": ["扫雷", "俄罗斯方块", "乒乓球", "贪吃蛇"], "message": "小游戏专区开放中"}
 
 
+def market_categories_payload() -> list[dict[str, Any]]:
+    order = list(MARKET_CATEGORY_LABELS.keys())
+    return [
+        {"value": c, "label": MARKET_CATEGORY_LABELS.get(c, c), "method": CATEGORY_METHOD[c]}
+        for c in sorted(ALL_PRODUCT_CATEGORIES, key=lambda x: order.index(x) if x in order else 999)
+    ]
+
+
+def music_source_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "source_code": row["source_code"],
+        "base_url": row["base_url"],
+        "enabled": bool(row["enabled"]),
+        "sort_order": int(row["sort_order"] or 0),
+        "note": row["note"] or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_music_sources(conn: sqlite3.Connection, enabled_only: bool = False) -> list[dict[str, Any]]:
+    where = "WHERE enabled=1" if enabled_only else ""
+    rows = conn.execute(f"SELECT * FROM music_api_sources {where} ORDER BY enabled DESC, sort_order ASC, id ASC").fetchall()
+    return [music_source_to_dict(r) for r in rows]
+
+
+def resolve_music_source(conn: sqlite3.Connection, source: str = "") -> dict[str, Any] | None:
+    raw = str(source or "").strip()
+    row = None
+    if raw:
+        if raw.isdigit():
+            row = conn.execute("SELECT * FROM music_api_sources WHERE id=? AND enabled=1", (int(raw),)).fetchone()
+        if row is None:
+            row = conn.execute("SELECT * FROM music_api_sources WHERE (source_code=? OR name=?) AND enabled=1 ORDER BY sort_order ASC, id ASC LIMIT 1", (raw, raw)).fetchone()
+    if row is None:
+        row = conn.execute("SELECT * FROM music_api_sources WHERE enabled=1 ORDER BY sort_order ASC, id ASC LIMIT 1").fetchone()
+    return music_source_to_dict(row) if row else None
+
+
+@app.get("/api/admin/music")
+def admin_music(authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        settings = get_settings(conn)
+        sources = list_music_sources(conn)
+    return {"settings": {"music_default_bitrate": settings.get("music_default_bitrate", 320)}, "sources": sources}
+
+
+@app.post("/api/admin/music/sources")
+def admin_create_music_source(payload: MusicSourceIn, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    parsed = urllib.parse.urlparse(payload.base_url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="音乐 API 地址不合法")
+    with db() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO music_api_sources(name,source_code,base_url,enabled,sort_order,note,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (payload.name.strip(), payload.source_code.strip() or 'netease', payload.base_url.strip(), 1 if payload.enabled else 0, payload.sort_order, (payload.note or '').strip(), now(), now()),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="接口来源名称已存在")
+    return {"ok": True, "id": cur.lastrowid}
+
+
+@app.put("/api/admin/music/sources/{source_id}")
+def admin_update_music_source(source_id: int, payload: MusicSourceIn, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    parsed = urllib.parse.urlparse(payload.base_url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="音乐 API 地址不合法")
+    with db() as conn:
+        try:
+            cur = conn.execute(
+                "UPDATE music_api_sources SET name=?, source_code=?, base_url=?, enabled=?, sort_order=?, note=?, updated_at=? WHERE id=?",
+                (payload.name.strip(), payload.source_code.strip() or 'netease', payload.base_url.strip(), 1 if payload.enabled else 0, payload.sort_order, (payload.note or '').strip(), now(), source_id),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail="接口来源名称已存在")
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="接口来源不存在")
+    return {"ok": True}
+
+
+@app.delete("/api/admin/music/sources/{source_id}")
+def admin_delete_music_source(source_id: int, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        cur = conn.execute("DELETE FROM music_api_sources WHERE id=?", (source_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="接口来源不存在")
+    return {"ok": True}
+
+
+def _music_api_request(settings: dict[str, Any], params: dict[str, Any], source_config: dict[str, Any] | None = None) -> Any:
+    if source_config is not None:
+        if not source_config.get("enabled", True):
+            raise HTTPException(status_code=503, detail="该音乐接口来源已关闭")
+        base_url = str(source_config.get("base_url") or "").strip()
+    else:
+        if not settings.get("music_api_enabled", True):
+            raise HTTPException(status_code=503, detail="音乐接口已在后台关闭")
+        base_url = str(settings.get("music_api_base_url") or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="后台未配置音乐接口地址")
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="音乐接口地址不合法")
+    url = base_url + ("&" if "?" in base_url else "?") + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"User-Agent": "YHDET-Music/1.0", "Accept": "application/json,text/plain,*/*"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read(1024 * 1024).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"音乐接口返回错误：{e.code}")
+    except Exception:
+        raise HTTPException(status_code=502, detail="音乐接口请求失败")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
+
+
+def _music_song_to_dict(item: Any, source: str) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    song_id = item.get("id") or item.get("songid") or item.get("mid") or item.get("songmid")
+    name = item.get("name") or item.get("title") or item.get("songname")
+    if not song_id or not name:
+        return None
+    artist = item.get("artist") or item.get("author") or item.get("singer") or item.get("artists") or "未知歌手"
+    if isinstance(artist, list):
+        artist = " / ".join([str(x.get("name") if isinstance(x, dict) else x) for x in artist if x])
+    album = item.get("album") or item.get("pic") or item.get("cover") or ""
+    return {
+        "id": str(song_id),
+        "name": str(name),
+        "title": str(name),
+        "artist": str(artist or "未知歌手"),
+        "album": str(album or ""),
+        "source": str(item.get("source") or source or "netease"),
+    }
+
+
+def _extract_music_items(data: Any, source: str) -> list[dict[str, Any]]:
+    candidates: list[Any] = []
+    if isinstance(data, list):
+        candidates = data
+    elif isinstance(data, dict):
+        for key in ("info", "data", "result", "songs", "items", "list"):
+            value = data.get(key)
+            if isinstance(value, list):
+                candidates = value
+                break
+            if isinstance(value, dict):
+                for subkey in ("songs", "items", "list"):
+                    if isinstance(value.get(subkey), list):
+                        candidates = value[subkey]
+                        break
+            if candidates:
+                break
+    out = []
+    seen = set()
+    for item in candidates:
+        row = _music_song_to_dict(item, source)
+        if not row:
+            continue
+        key = (row["id"], row["source"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _extract_music_url(data: Any) -> str:
+    if isinstance(data, str):
+        return data
+    if isinstance(data, list) and data:
+        return _extract_music_url(data[0])
+    if isinstance(data, dict):
+        for key in ("url", "music_url", "play_url"):
+            if data.get(key):
+                return str(data[key])
+        for key in ("data", "info", "result"):
+            if key in data:
+                found = _extract_music_url(data[key])
+                if found:
+                    return found
+    return ""
+
+
 @app.get("/api/music")
 def music():
-    return {"items": ["社区歌单", "随机播放", "音乐留言"], "message": "音乐专区开放中"}
+    with db() as conn:
+        settings = get_settings(conn)
+        sources = list_music_sources(conn, enabled_only=True)
+    default_source = sources[0] if sources else None
+    return {
+        "items": ["实时搜索", "在线播放", "滚动歌词", "播放记录"],
+        "message": "音乐专区已接入第三方曲库，选择接口来源后搜索播放。",
+        "sources": sources,
+        "config": {
+            "enabled": bool(default_source),
+            "default_source": default_source["id"] if default_source else "",
+            "default_source_name": default_source["name"] if default_source else "暂无来源",
+            "default_bitrate": settings.get("music_default_bitrate") or 320,
+        },
+    }
+
+
+@app.get("/api/music/search")
+def music_search(q: str = "", source: str = "", page: int = 1, limit: int = 10):
+    query = q.strip()
+    if len(query) < 1:
+        return {"items": [], "has_more": False}
+    page = max(1, min(int(page or 1), 20))
+    limit = max(1, min(int(limit or 10), 30))
+    with db() as conn:
+        settings = get_settings(conn, include_secret=True)
+        source_config = resolve_music_source(conn, source)
+    if not source_config:
+        raise HTTPException(status_code=400, detail="后台未配置可用音乐接口来源")
+    src = str(source_config.get("source_code") or settings.get("music_default_source") or "netease").strip()[:40]
+    upstream_count = max(limit, 8)
+    request_params = {"types": "search", "source": src, "name": query, "count": upstream_count, "pages": page}
+    items: list[dict[str, Any]] = []
+    for attempt in range(3):
+        data = _music_api_request(settings, request_params, source_config)
+        items = _extract_music_items(data, src)
+        if items:
+            break
+        time.sleep(0.35 * (attempt + 1))
+    items = items[:limit]
+    return {"items": items, "page": page, "limit": limit, "has_more": len(items) >= limit}
+
+
+@app.get("/api/music/url")
+def music_url(id: str, source: str = "", br: int | None = None):
+    song_id = str(id or "").strip()
+    if not song_id:
+        raise HTTPException(status_code=400, detail="缺少歌曲 ID")
+    with db() as conn:
+        settings = get_settings(conn, include_secret=True)
+        source_config = resolve_music_source(conn, source)
+    if not source_config:
+        raise HTTPException(status_code=400, detail="后台未配置可用音乐接口来源")
+    src = str(source_config.get("source_code") or settings.get("music_default_source") or "netease").strip()[:40]
+    bitrate = int(br or settings.get("music_default_bitrate") or 320)
+    data = _music_api_request(settings, {"types": "url", "source": src, "id": song_id, "br": bitrate}, source_config)
+    url = _extract_music_url(data)
+    if not url:
+        raise HTTPException(status_code=502, detail="未获取到可播放地址")
+    return {"url": url, "source": src, "id": song_id}
+
+
+@app.get("/api/music/lyric")
+def music_lyric(id: str, source: str = ""):
+    song_id = str(id or "").strip()
+    if not song_id:
+        raise HTTPException(status_code=400, detail="缺少歌曲 ID")
+    with db() as conn:
+        settings = get_settings(conn, include_secret=True)
+        source_config = resolve_music_source(conn, source)
+    if not source_config:
+        raise HTTPException(status_code=400, detail="后台未配置可用音乐接口来源")
+    src = str(source_config.get("source_code") or settings.get("music_default_source") or "netease").strip()[:40]
+    data = _music_api_request(settings, {"types": "lyric", "source": src, "id": song_id}, source_config)
+    lyric = ""
+    if isinstance(data, dict):
+        lyric = str(data.get("lyric") or data.get("lrc") or data.get("raw") or "")
+        tlyric = str(data.get("tlyric") or "")
+    else:
+        tlyric = ""
+    return {"lyric": lyric, "tlyric": tlyric, "source": src, "id": song_id}
+
+
+@app.post("/api/music/log")
+def music_log(payload: dict[str, Any]):
+    # 轻量记录接口，前台可调用；目前不落库，避免产生大量行为数据。
+    return {"ok": True}
 
 
 frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
