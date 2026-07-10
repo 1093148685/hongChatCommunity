@@ -352,6 +352,7 @@ def default_settings() -> dict[str, str]:
         "music_api_base_url": "https://music-api.gdstudio.xyz/api.php",
         "music_default_source": "netease",
         "music_default_bitrate": "320",
+        "banners_enabled": "0",
         "banners_json": json.dumps(BANNERS, ensure_ascii=False),
     }
 
@@ -376,6 +377,7 @@ def get_settings(conn: sqlite3.Connection, include_secret: bool = False) -> dict
     data["qidao_oauth_enabled"] = str(data.get("qidao_oauth_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     data["connect_oauth_enabled"] = str(data.get("connect_oauth_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     data["music_api_enabled"] = str(data.get("music_api_enabled", "1")) in {"1", "true", "True", "yes", "on"}
+    data["banners_enabled"] = str(data.get("banners_enabled", "0")) in {"1", "true", "True", "yes", "on"}
     try:
         data["music_default_bitrate"] = int(data.get("music_default_bitrate") or 320)
     except Exception:
@@ -889,6 +891,7 @@ def init_db() -> None:
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_oauth_enabled', '0')")
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_scope', 'openid profile email trust_level')")
         conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('connect_issuer', 'https://connect.ccocc.cyou')")
+        conn.execute("INSERT OR IGNORE INTO site_settings(key,value) VALUES('banners_enabled', '0')")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_music_sources_name ON music_api_sources(name)")
         conn.execute(
             """
@@ -1516,6 +1519,7 @@ class SiteSettingsIn(BaseModel):
     music_api_base_url: str | None = Field(default=None, max_length=500)
     music_default_source: str | None = Field(default=None, max_length=40)
     music_default_bitrate: int | None = Field(default=None, ge=64, le=999)
+    banners_enabled: bool | None = None
     banners_json: str | None = Field(default=None, max_length=8000)
 
 
@@ -2097,7 +2101,7 @@ def get_chrome_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "settings": {"site_name": settings.get("site_name"), "site_logo": settings.get("site_logo"), "default_avatar": settings.get("default_avatar"), "captcha_enabled": settings.get("captcha_enabled"), "qidao_oauth_enabled": settings.get("qidao_oauth_enabled"), "qidao_client_id": settings.get("qidao_client_id"), "qidao_scope": settings.get("qidao_scope")},
         "stats": {"visits": visits, "users": users, "posts": posts, "comments": comments},
         "runtime": {"started_at": SITE_STARTED_AT.strftime("%Y-%m-%d %H:%M:%S"), "uptime_seconds": uptime_seconds, "uptime_text": human_duration(uptime_seconds), "version": app.version},
-        "banners": get_banners_from_settings(settings),
+        "banners": get_banners_from_settings(settings) if settings.get("banners_enabled") else [],
         "donors": [{"name": d["name"], "amount": d["amount"], "date": d["donated_at"]} for d in donor_rows],
         "notice": {"text": notice["content"], "author": notice["username"], "time": notice["created_at"]} if notice else {"text": "", "author": "", "time": ""},
     }
@@ -4229,7 +4233,7 @@ def admin_update_settings(payload: SiteSettingsIn, authorization: str | None = H
         for key, value in data.items():
             if key in {"smtp_password", "qidao_client_secret"} and (value is None or value == "***"):
                 continue
-            if key in {"email_enabled", "guest_access_restricted", "captcha_enabled", "qidao_oauth_enabled", "music_api_enabled"}:
+            if key in {"email_enabled", "guest_access_restricted", "captcha_enabled", "qidao_oauth_enabled", "music_api_enabled", "banners_enabled"}:
                 value = "1" if value else "0"
             set_setting(conn, key, value)
         updated = get_settings(conn)

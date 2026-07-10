@@ -222,26 +222,47 @@ async function api(path, options = {}) {
 
 function Nav({ me, setMe, path, site = defaultSite }) {
   const current = new URL(path, location.origin).pathname
-  const cls = (path) => `nav-link ${current === path ? 'active' : ''}`
+  const isActive = (path) => current === path || (path !== '/' && current.startsWith(path))
+  const cls = (path) => `nav-link ${isActive(path) ? 'active' : ''}`
+  const mobileCls = (path) => `mobile-tab ${isActive(path) ? 'active' : ''}`
   const logout = () => { localStorage.removeItem(tokenKey); localStorage.removeItem('yhdet_user'); setMe(null); navigate('/') }
-  return <nav className="navbar">
-    <div className="navbar-inner">
-      <a href="/" className="navbar-brand"><span className="logo-icon">{site.site_logo ? <img src={safeAvatar(site.site_logo)} alt="" /> : <i className="fas fa-comments" />}</span>{site.site_name || '泓聊社区'}</a>
-      <div className="navbar-menu">
-        <a href="/" className={cls('/')}><i className="fas fa-home" /> 首页</a>
-        <a href="/channels" className={cls('/channels')}><i className="fas fa-broadcast-tower" /> 频道</a>
-        <a href="/articles" className={cls('/articles')}><i className="fas fa-book-open" /> 文章</a>
-        <a href="/market" className={cls('/market')}><i className="fas fa-store" /> 泓市场</a>
-        <a href="/games" className={cls('/games')}><i className="fas fa-gamepad" /> 小游戏</a>
-        <a href="/music" className={cls('/music')}><i className="fas fa-music" /> 音乐</a>
-        {me?.role === 'admin' && <a href="/admin" className={cls('/admin')}><i className="fas fa-shield-halved" /> 后台</a>}
-        {me ? <><a href="/new" className="nav-btn"><i className="fas fa-pen" /> 发帖</a><NotificationBell /><button className="nav-btn nav-btn-outline" onClick={logout}>退出</button></> : <><a href="/login" className="nav-btn nav-btn-outline">登录</a><a href="/register" className="nav-btn">注册</a></>}
+  return <>
+    <nav className="navbar">
+      <div className="navbar-inner">
+        <a href="/" className="navbar-brand"><span className="logo-icon">{site.site_logo ? <img src={safeAvatar(site.site_logo)} alt="" /> : <i className="fas fa-comments" />}</span><span className="brand-title">{site.site_name || '泓聊社区'}</span></a>
+        <div className="navbar-menu">
+          <a href="/" className={cls('/')}><i className="fas fa-home" /> 首页</a>
+          <a href="/channels" className={cls('/channels')}><i className="fas fa-broadcast-tower" /> 频道</a>
+          <a href="/articles" className={cls('/articles')}><i className="fas fa-book-open" /> 文章</a>
+          <a href="/market" className={cls('/market')}><i className="fas fa-store" /> 泓市场</a>
+          <a href="/games" className={cls('/games')}><i className="fas fa-gamepad" /> 小游戏</a>
+          <a href="/music" className={cls('/music')}><i className="fas fa-music" /> 音乐</a>
+          {me?.role === 'admin' && <a href="/admin" className={cls('/admin')}><i className="fas fa-shield-halved" /> 后台</a>}
+          {me ? <><a href="/new" className="nav-btn"><i className="fas fa-pen" /> 发帖</a><NotificationBell /><button className="nav-btn nav-btn-outline" onClick={logout}>退出</button></> : <><a href="/login" className="nav-btn nav-btn-outline">登录</a><a href="/register" className="nav-btn">注册</a></>}
+        </div>
+        <nav className="mobile-top-icon-nav" aria-label="移动端主导航">
+          <a href="/" className={mobileCls('/')} title="首页" aria-label="首页"><i className="fas fa-home" /></a>
+          <a href="/channels" className={mobileCls('/channels')} title="频道" aria-label="频道"><i className="fas fa-broadcast-tower" /></a>
+          <a href="/articles" className={mobileCls('/articles')} title="文章" aria-label="文章"><i className="fas fa-book-open" /></a>
+          <a href="/market" className={mobileCls('/market')} title="泓市场" aria-label="泓市场"><i className="fas fa-store" /></a>
+          <details className={`mobile-more ${['/games','/music','/admin','/login','/register','/new'].some(isActive) ? 'active' : ''}`}>
+            <summary title="我的" aria-label="我的"><i className="fas fa-user-circle" /></summary>
+            <div className="mobile-more-menu">
+              {me ? <a href={`/user/${me.id || ''}`}><i className="fas fa-user" /> 我的主页</a> : <a href="/login"><i className="fas fa-right-to-bracket" /> 登录 / 注册</a>}
+              <a href="/new"><i className="fas fa-pen" /> 发帖</a>
+              <a href="/music"><i className="fas fa-music" /> 音乐</a>
+              <a href="/games"><i className="fas fa-gamepad" /> 小游戏</a>
+              {me?.role === 'admin' && <a href="/admin"><i className="fas fa-shield-halved" /> 管理后台</a>}
+              {me && <button type="button" onClick={logout}><i className="fas fa-arrow-right-from-bracket" /> 退出登录</button>}
+            </div>
+          </details>
+        </nav>
       </div>
-    </div>
-  </nav>
+    </nav>
+  </>
 }
 
-function NotificationBell() {
+function NotificationBell({ compact = false }) {
   const [n, setN] = useState(0)
   useEffect(() => {
     let alive = true
@@ -253,6 +274,7 @@ function NotificationBell() {
     return () => { alive = false; clearInterval(t); window.removeEventListener('notifications:refresh', onRefresh) }
   }, [])
   const me = JSON.parse(localStorage.getItem('yhdet_user') || '{}')
+  if (compact) return <a className="mobile-notify" href={`/user/${me.id || ''}#comments`} title="消息"><i className="fas fa-bell" />{n > 0 && <span className="bubble-badge red-badge">{n > 99 ? '99+' : n}</span>}</a>
   return <a className="nav-link nav-user-with-badge" href={`/user/${me.id || ''}#comments`} title="个人主页">{me.username || '我的主页'}{n > 0 && <span className="bubble-badge red-badge">{n > 99 ? '99+' : n}</span>}</a>
 }
 
@@ -267,6 +289,7 @@ function SiteStats({ stats }) {
 }
 
 function LedBanner({ banners = [] }) {
+  if (!banners.length) return null
   const icons = { cyan: '⚡', pink: '🚀', yellow: '🎉', green: '🎮', purple: '🎨' }
   return <div className="led-banner"><div className="led-glow-line" /><div className="led-track" id="ledTrack">
     {[0, 1].map(round => banners.map((b, idx) => <React.Fragment key={`${round}-${idx}`}>{idx > 0 && <div className="led-divider" />}<div className={`led-item ${b.color}`}><span className="led-tag">{b.tag}</span> {icons[b.color] || '✨'} {b.content || b.text}</div></React.Fragment>))}
@@ -1900,8 +1923,10 @@ function parseLyrics(text = '') {
     return value ? { time, text:value } : null
   }).filter(Boolean)
 }
-function formatPlayerTime(seconds = 0) {
-  const n = Math.max(0, Math.floor(Number(seconds || 0)))
+function formatPlayerTime(seconds = 0, fallback = '00:00') {
+  const raw = Number(seconds)
+  if (!Number.isFinite(raw) || raw <= 0) return fallback
+  const n = Math.max(0, Math.floor(raw))
   const m = String(Math.floor(n / 60)).padStart(2, '0')
   const s = String(n % 60).padStart(2, '0')
   return `${m}:${s}`
@@ -2013,6 +2038,7 @@ function MusicPage() {
   const [playerError, setPlayerError] = useState('')
   const [current, setCurrent] = useState(null)
   const [lyrics, setLyrics] = useState([])
+  const [lyricsOpen, setLyricsOpen] = useState(false)
   const [lyricIndex, setLyricIndex] = useState(-1)
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
@@ -2023,6 +2049,8 @@ function MusicPage() {
   const [queue, setQueue] = useState([])
   const [queueIndex, setQueueIndex] = useState(-1)
   const [recentSongs, setRecentSongs] = useState(() => readMusicStorage(MUSIC_RECENT_KEY, []))
+  const [musicPanel, setMusicPanel] = useState(false)
+  const [musicPanelTab, setMusicPanelTab] = useState('queue')
   const [loadingSongKey, setLoadingSongKey] = useState('')
   const audioRef = useRef(null)
   const lyricBoxRef = useRef(null)
@@ -2094,6 +2122,7 @@ function MusicPage() {
     setPlayerError('')
     setLoadingSongKey(songKey)
     setPlayerState('resolving')
+    setPopoverOpen(false)
     let targetIndex = Number.isInteger(opts.queueIndex) ? opts.queueIndex : -1
     if (targetIndex < 0) {
       const existing = queue.findIndex(x => normalizeSongKey(x) === songKey)
@@ -2108,7 +2137,7 @@ function MusicPage() {
       if (seq !== playSeqRef.current) return
       const next = { ...song, source: song.source || activeSource, url:urlRes.url }
       setCurrent(next)
-      setCurrentTime(0); setDuration(0); setLyricIndex(-1)
+      setCurrentTime(0); setDuration(0); setLyricIndex(-1); setLyricsOpen(false)
       setLyrics([])
       setRecentSongs(prev => dedupeSongs([next], prev).slice(0, 30))
       try {
@@ -2175,12 +2204,14 @@ function MusicPage() {
   const modeIcon = playMode === 'single' ? 'fa-repeat' : playMode === 'random' ? 'fa-shuffle' : 'fa-list-ul'
   const modeTitle = playMode === 'single' ? '单曲循环' : playMode === 'random' ? '随机播放' : '列表循环'
   const visibleLyrics = lyrics.length ? lyrics : [{ time:0, text: current ? (playerState === 'resolving' ? '正在获取播放地址与歌词...' : '暂无歌词，享受音乐。') : '搜索并选择一首歌，歌词会在这里动态滚动。' }]
+  const lyricToggleText = lyricsOpen ? '收起歌词' : (lyrics.length ? `展开歌词 · ${lyrics.length} 行` : '展开歌词')
+  const panelSongs = musicPanelTab === 'queue' ? queue : recentSongs.slice(0, 20)
+  const panelTitle = musicPanelTab === 'queue' ? '播放队列' : '最近播放'
+  const panelEmpty = musicPanelTab === 'queue' ? '播放歌曲后会自动生成队列' : '还没有最近播放'
+  const progressPercent = duration ? Math.min(100, Math.max(0, (currentTime / duration) * 100)) : 0
+  const stateLabel = playerState === 'resolving' ? '获取中' : playerState === 'playing' ? '播放中' : playerState === 'error' ? '播放失败' : '已暂停'
   return <><PageChrome /><div className={`main-content music-page ${current ? 'has-current' : ''}`}>
     {err && <div className="alert alert-error">{err}</div>}
-    <header className="music-page-head">
-      <div><h1><i className="fas fa-music" /> 音乐</h1><p>搜索、队列、歌词与连续播放，保持社区的清爽体验。</p></div>
-      <span className="music-status-chip"><i className="fas fa-plug" /> {sourceName}</span>
-    </header>
     <div className="search-container music-search-container animate-fadeInUp" ref={searchAnchorRef}>
       <form className="music-search-form" onSubmit={submitMusicSearch}>
         <div className="search-input-wrap music-input-wrap"><i className="fas fa-search" /><input className="search-input" value={query} onFocus={() => query.trim() && setPopoverOpen(true)} onChange={e => handleMusicInput(e.target.value)} placeholder="搜索歌名、歌手或专辑" />{query && <button type="button" className="music-clear-btn" onClick={() => handleMusicInput('')} aria-label="清空搜索"><i className="fas fa-xmark" /></button>}</div>
@@ -2193,35 +2224,38 @@ function MusicPage() {
     <MusicSearchOverlay open={popoverOpen} anchorRef={searchAnchorRef} query={query} results={results} searching={searching} hasMore={hasMore} currentKey={currentKey} loadingSongKey={loadingSongKey} onPlay={playSong} onQueue={addToQueue} onScrollBottom={loadMore} onClose={() => setPopoverOpen(false)} />
 
     <section className="music-shell animate-fadeInUp">
-      <div className="music-player-card card">
+      {!current ? null : <div className="music-player-card card">
         <audio ref={audioRef} src={current?.url || ''} className="music-audio" onTimeUpdate={onTimeUpdate} onLoadedMetadata={onTimeUpdate} onPlay={() => setPlayerState('playing')} onPause={() => setPlayerState(current?.url ? 'paused' : 'idle')} onEnded={handleEnded} />
-        <div className="music-hero-row">
-          <div className="music-disc">{isCoverUrl ? <img src={current.album} alt="专辑封面" loading="lazy" decoding="async" /> : <i className={`fas ${current ? 'fa-music' : 'fa-compact-disc'}`} />}</div>
-          <div className="music-track-meta"><span className={`music-player-state state-${playerState}`}>{playerState === 'resolving' ? '获取中' : playerState === 'playing' ? '播放中' : playerState === 'error' ? '播放失败' : current ? '已就绪' : '待播放'}</span><h2>{current?.name || '选择一首歌开始'}</h2><p>{current ? `${current.artist} · ${sourceName}` : '从上方搜索，或从右侧最近播放继续。'}</p>{playerError && <small className="music-player-error">{playerError}</small>}</div>
-        </div>
-        <div className="music-lyrics" ref={lyricBoxRef}>{visibleLyrics.map((l, idx) => {
+        {lyricsOpen && <div className="music-lyrics-natural" ref={lyricBoxRef}>{visibleLyrics.map((l, idx) => {
           const distance = lyricIndex < 0 ? 9 : Math.abs(idx - lyricIndex)
-          return <p key={`${l.time}-${idx}`} className={`music-lyric-line ${lyrics[lyricIndex]?.time === l.time ? 'active' : ''} ${distance <= 2 ? 'nearby' : ''} ${!lyrics.length ? 'muted-lyric' : ''}`} onClick={() => lyrics.length && seekTo(l.time)}>{l.text}</p>
-        })}</div>
+          return <p key={`${l.time}-${idx}`} className={`music-lyric-line ${lyrics[lyricIndex]?.time === l.time ? 'active' : ''} ${distance <= 2 ? 'nearby' : ''} ${!lyrics.length ? 'muted-lyric' : ''}`}>{l.text}</p>
+        })}</div>}
         <div className="music-control-panel">
-          <div className="music-progress music-slider-row"><span>{formatPlayerTime(currentTime)}</span><input className="music-range" type="range" min="0" max={duration || 0} step="1" value={Math.min(currentTime, duration || currentTime || 0)} disabled={!duration} onChange={e => seekTo(e.target.value)} /><span>{formatPlayerTime(duration)}</span></div>
+          <div className="music-control-now">
+            <div className={`music-control-cover ${!isCoverUrl ? 'is-placeholder' : ''}`}>{isCoverUrl ? <img src={current.album} alt="歌曲封面" loading="lazy" decoding="async" /> : <i className="fas fa-compact-disc" />}</div>
+            <div className="music-control-meta"><span className={`music-player-state state-${playerState}`}><i /> {stateLabel}</span><b>{current.name}</b><small><strong>{current.artist || '未知作者'}</strong><em>{sourceName}</em></small>{playerError && <em className="music-error-text">{playerError}</em>}</div>
+          </div>
+          <div className="music-progress music-slider-row" style={{ '--music-progress': `${progressPercent}%` }}><span>{formatPlayerTime(currentTime)}</span><input className="music-range" type="range" min="0" max={duration || 0} step="1" value={Math.min(currentTime, duration || currentTime || 0)} disabled={!duration} onChange={e => seekTo(e.target.value)} /><span>{formatPlayerTime(duration, '--:--')}</span></div>
           <div className="music-actions">
-            <button type="button" className={`music-icon-btn ${liked ? 'active' : ''}`} title="收藏到本机" aria-label="收藏到本机" disabled={!current} onClick={toggleFavorite}><i className={`${liked ? 'fas' : 'far'} fa-heart`} /></button>
+            <button type="button" className={`music-icon-btn ${liked ? 'active' : ''}`} title="收藏到本机" aria-label="收藏到本机" onClick={toggleFavorite}><i className={`${liked ? 'fas' : 'far'} fa-heart`} /></button>
             <button type="button" className="music-icon-btn" title="上一首" aria-label="上一首" disabled={queue.length < 2} onClick={() => playSibling(-1)}><i className="fas fa-backward-step" /></button>
             <button type="button" className="music-play-btn" title={isPlaying ? '暂停' : '播放'} aria-label={isPlaying ? '暂停' : '播放'} disabled={!current?.url || playerState === 'resolving'} onClick={togglePlay}><i className={`fas ${playerState === 'resolving' ? 'fa-spinner fa-spin' : isPlaying ? 'fa-pause' : 'fa-play'}`} /></button>
             <button type="button" className="music-icon-btn" title="下一首" aria-label="下一首" disabled={queue.length < 2} onClick={() => playSibling(1)}><i className="fas fa-forward-step" /></button>
-            <button type="button" className="music-icon-btn" title="加入队列" aria-label="加入队列" disabled={!current} onClick={() => current && addToQueue(current)}><i className="fas fa-plus" /></button>
+            <button type="button" className="music-icon-btn" title="播放列表" aria-label="播放列表" onClick={() => { setMusicPanelTab('queue'); setMusicPanel(true) }}><i className="fas fa-list-ul" /></button>
+            <button type="button" className="music-icon-btn lyric-toggle-btn" title={lyricToggleText} aria-label={lyricToggleText} onClick={() => setLyricsOpen(v => !v)}><span>词</span></button>
             <button type="button" className="music-icon-btn" title={modeTitle} aria-label={modeTitle} onClick={() => setPlayMode(m => m === 'list' ? 'single' : m === 'single' ? 'random' : 'list')}><i className={`fas ${modeIcon}`} /></button>
-            <label className="music-volume"><button type="button" aria-label="静音切换" onClick={() => setVolume(v => v > 0 ? 0 : 0.72)}><i className={`fas ${volume > 0 ? 'fa-volume-high' : 'fa-volume-xmark'}`} /></button><input className="music-range volume-range" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))} /></label>
+            <label className="music-volume" style={{ '--music-progress': `${volume * 100}%` }}><button type="button" aria-label="静音切换" onClick={() => setVolume(v => v > 0 ? 0 : 0.72)}><i className={`fas ${volume > 0 ? 'fa-volume-high' : 'fa-volume-xmark'}`} /></button><input className="music-range volume-range" type="range" min="0" max="1" step="0.01" value={volume} onChange={e => setVolume(Number(e.target.value))} /></label>
           </div>
         </div>
-      </div>
-      <aside className="music-side card">
-        <div className="music-side-section"><div className="music-side-head"><h3>播放队列</h3><span>{queue.length} 首</span></div>{queue.length ? queue.map((song, idx) => <button key={normalizeSongKey(song)} type="button" className={`music-queue-row ${idx === queueIndex ? 'active' : ''}`} onClick={() => playQueueIndex(idx)}><span>{idx === queueIndex && isPlaying ? <i className="fas fa-volume-high" /> : idx + 1}</span><b>{song.name}</b><small>{song.artist}</small></button>) : <div className="music-side-empty">播放歌曲后会自动生成队列</div>}</div>
-        <div className="music-side-section"><div className="music-side-head"><h3>最近播放</h3><span>{recentSongs.length} 首</span></div>{recentSongs.length ? recentSongs.slice(0, 8).map(song => <button key={normalizeSongKey(song)} type="button" className="music-queue-row" onClick={() => playSong(song)}><span><i className="fas fa-clock-rotate-left" /></span><b>{song.name}</b><small>{song.artist}</small></button>) : <div className="music-side-empty">还没有最近播放</div>}</div>
-      </aside>
+      </div>}
     </section>
-    {current && <div className="music-mini-bar"><div className="music-mini-info"><span>{isCoverUrl ? <img src={current.album} alt="" /> : <i className="fas fa-music" />}</span><b>{current.name}</b><small>{current.artist}</small></div><button type="button" onClick={togglePlay} disabled={playerState === 'resolving'}><i className={`fas ${isPlaying ? 'fa-pause' : 'fa-play'}`} /></button><button type="button" onClick={() => playSibling(1)} disabled={queue.length < 2}><i className="fas fa-forward-step" /></button></div>}
+    {musicPanel && <div className="music-panel-mask" onClick={() => setMusicPanel(false)}>
+      <div className="music-panel-modal" onClick={e => e.stopPropagation()}>
+        <div className="music-panel-head"><h3>{panelTitle}</h3><span>{panelSongs.length} 首</span><button type="button" aria-label="关闭" onClick={() => setMusicPanel(false)}><i className="fas fa-xmark" /></button></div>
+        <div className="music-panel-tabs"><button type="button" className={musicPanelTab === 'queue' ? 'active' : ''} onClick={() => setMusicPanelTab('queue')}><i className="fas fa-list-ul" /> 播放队列</button><button type="button" className={musicPanelTab === 'recent' ? 'active' : ''} onClick={() => setMusicPanelTab('recent')}><i className="fas fa-clock-rotate-left" /> 最近播放</button></div>
+        <div className="music-panel-list">{panelSongs.length ? panelSongs.map((song, idx) => <button key={`${musicPanelTab}-${normalizeSongKey(song)}-${idx}`} type="button" className={`music-queue-row ${musicPanelTab === 'queue' && idx === queueIndex ? 'active' : ''}`} onClick={() => { musicPanelTab === 'queue' ? playQueueIndex(idx) : playSong(song); setMusicPanel(false) }}><span>{musicPanelTab === 'queue' ? (idx === queueIndex && isPlaying ? <i className="fas fa-volume-high" /> : idx + 1) : <i className="fas fa-clock-rotate-left" />}</span><b>{song.name}</b><small>{song.artist}</small></button>) : <div className="music-side-empty">{panelEmpty}</div>}</div>
+      </div>
+    </div>}
   </div></>
 }
 function AdminPage({ me }) {
@@ -2577,6 +2611,7 @@ function AdminSettings({ data, draft, setDraft, run }) {
       <label><span>默认用户头像</span><input className="form-input" value={s.default_avatar || ''} placeholder="新用户默认头像 URL" onChange={e => set('default_avatar', e.target.value)} /></label>
       <label><span>登录/注册验证码</span><select className="form-select" value={s.captcha_enabled ? '1' : '0'} onChange={e => set('captcha_enabled', e.target.value === '1')}><option value="0">关闭：登录注册不显示验证码（默认）</option><option value="1">开启：登录注册必须填写验证码</option></select></label>
       <label><span>限制访客浏览</span><select className="form-select" value={s.guest_access_restricted ? '1' : '0'} onChange={e => set('guest_access_restricted', e.target.value === '1')}><option value="0">关闭：访客可搜索/浏览更多帖子和频道</option><option value="1">开启：搜索、翻页、频道、市场需登录</option></select></label>
+      <label><span>广告跑马灯</span><select className="form-select" value={s.banners_enabled ? '1' : '0'} onChange={e => set('banners_enabled', e.target.value === '1')}><option value="0">关闭：前台不显示跑马灯（默认）</option><option value="1">开启：首页和顶部页面显示跑马灯</option></select></label>
       <label><span>邮件通知</span><select className="form-select" value={s.email_enabled ? '1' : '0'} onChange={e => set('email_enabled', e.target.value === '1')}><option value="0">关闭</option><option value="1">开启</option></select></label>
       <label><span>SMTP Host</span><input className="form-input" value={s.smtp_host || ''} onChange={e => set('smtp_host', e.target.value)} /></label>
       <label><span>SMTP Port</span><input className="form-input" type="number" value={s.smtp_port || 465} onChange={e => set('smtp_port', Number(e.target.value || 465))} /></label>
@@ -2592,7 +2627,7 @@ function AdminSettings({ data, draft, setDraft, run }) {
     </div>
     <div className="alert alert-info">访客限制默认关闭：未登录用户可以搜索、翻页浏览帖子、频道和泓市场；发帖、评论、签到、兑换、后台仍需登录。</div>
     <div className="alert alert-info">栖岛回调地址请在开放平台配置为：<code>{location.origin}/api/oauth/qidao/callback</code>。Client Secret 仅后端保存，前台不会下发。</div>
-    <div className="alert alert-info">跑马灯支持 tag/content/color；被评论会生成红色站内气泡，点击单条后红点消失，也可全部已读。</div>
+    <div className="alert alert-info">广告跑马灯默认关闭；开启后按下方 JSON 显示，支持 tag/content/color。被评论会生成红色站内气泡，点击单条后红点消失，也可全部已读。</div>
     <div className="admin-actions settings-actions"><button className="btn btn-primary" onClick={save}>保存系统设置</button></div>
   </div>
 }
