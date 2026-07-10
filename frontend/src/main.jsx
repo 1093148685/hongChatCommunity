@@ -278,7 +278,31 @@ function SearchBox({ onSearch, searching = false, initialQuery = '', initialType
   </form></div>
 }
 
-function htmlText(s = '') { return s.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '') }
+function htmlText(s = '') { return String(s || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '') }
+function compactText(text = '', max = 180) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  return normalized.length > max ? normalized.slice(0, max).trim() + '…' : normalized
+}
+function maskSensitivePreview(text = '') {
+  let out = String(text || '')
+  const emailCount = (out.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).length
+  out = out.replace(/([A-Z0-9._%+-]{2})[A-Z0-9._%+-]*(@[A-Z0-9.-]+\.[A-Z]{2,})/gi, '$1***$2')
+  out = out.replace(/\b[A-Za-z0-9_-]{24,}\b/g, v => `${v.slice(0, 4)}…${v.slice(-4)}`)
+  return { text: out, sensitive: emailCount >= 3 || /\b(token|secret|password|passwd|密钥|密码)\b/i.test(text) }
+}
+function postPreviewText(raw = '') {
+  const masked = maskSensitivePreview(htmlText(raw))
+  return { ...masked, text: compactText(masked.text, masked.sensitive ? 120 : 190) }
+}
+function channelPreviewText(title = '', preview = '') {
+  let text = htmlText(preview)
+  const cleanTitle = compactText(title, 160).replace(/[\s。；，,.]+$/g, '')
+  const normalized = text.trim()
+  if (cleanTitle && normalized.startsWith(cleanTitle)) text = normalized.slice(cleanTitle.length).replace(/^\s*[：:。\-—|丨,，]*/, '')
+  text = text.replace(/https?:\/\/\S+/g, '').trim()
+  return compactText(text || '查看频道原文', 140)
+}
 function parseTimeValue(s = '') {
   if (!s) return null
   let normalized = String(s).trim().replace(' ', 'T')
@@ -570,12 +594,13 @@ function useFlipList(items, keyFn = x => x.id) {
 }
 
 function PostItem({ post, innerRef }) {
+  const preview = postPreviewText(post.preview || post.content)
   return <a ref={innerRef} href={`/post/${post.id}`} className={`post-item ${post.bumped ? 'bumped' : ''}`} style={{ textDecoration: 'none', display: 'block' }} onMouseDown={e => e.currentTarget.classList.add('is-active')} onBlur={e => e.currentTarget.classList.remove('is-active')}>
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
       <AvatarRing user={post} src={post.avatar} size={48} className="post-avatar-ring" />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="post-title">{post.pinned && <span className="pin-badge"><i className="fas fa-thumbtack" /> 置顶</span>}{post.title}</div>
-        <div className="post-preview">{htmlText(post.preview || post.content)}</div>
+        <div className={`post-preview ${preview.sensitive ? 'masked-preview' : ''}`}>{preview.sensitive && <span className="sensitive-chip"><i className="fas fa-shield-halved" /> 已折叠敏感片段</span>}{preview.text}</div>
         <div className="post-meta"><div className="post-meta-item"><a href={`/user/${post.user_id}`} className={`post-author-name ${usernameClass(post)}`} onClick={e => e.stopPropagation()}>{post.author}</a><UsernameBadge user={post} />{post.role && <span className="role-badge role-super-admin"><i className="fas fa-crown" /> {post.role}</span>}</div><div className="post-meta-item"><i className="far fa-clock" /> {relativeTime(post.time)}</div><div className="post-stats"><span className="post-stat"><i className="far fa-comment" /> {post.comments || ''}</span><span className="post-stat"><i className="far fa-eye" /> {post.views || ''}</span></div></div>
         {post.custom_title && <span className="custom-title" style={{ marginTop: 6 }}>{post.custom_title}</span>}
       </div>
@@ -648,7 +673,7 @@ function Home() {
   useEffect(() => {
     let alive = true
     let timer = 0
-    const loadHome = (silent = false) => api('/api/home').then(d => {
+    const loadHome = (silent = false) => api('/api/chrome').then(d => {
       if (!alive) return
       setData(d); if (d.settings) chromeCache = d
     }).catch(e => { if (alive && !silent) setErr(e.message) })
@@ -753,7 +778,7 @@ function Home() {
     finally { setUsersLoadingMore(false) }
   }
   if (!data) return <HomeSkeleton />
-  return <><SiteStats stats={data.stats} /><LedBanner banners={data.banners} /><div className="main-content"><SearchBox onSearch={onSearch} searching={searching} initialQuery={query} initialType={searchTypeRef.current} />{err && <div className="alert alert-error">{err}</div>}<div className="home-layout"><div>{users ? <UserResults users={users} hasMore={usersHasMore} loadingMore={usersLoadingMore} onMore={loadMoreUsers} /> : <div className="card animate-fadeInUp"><div className="card-header"><h3><i className="fas fa-fire" style={{ color: 'var(--secondary)' }} /> 最新帖子</h3>{searching && <span className="mini-busy">刷新中</span>}</div><div>{searching && posts.length === 0 ? <PostListSkeleton count={5} /> : posts.length ? posts.map(p => <PostItem key={p.id} post={p} innerRef={postFlipRef(p.id)} />) : <div className="empty-state"><i className="fas fa-search" /><p>没有找到帖子</p></div>}{posts.length > 0 && <div className="infinite-loader">{loadingMore ? <><i className="fas fa-spinner fa-spin" /> 正在加载下一页...</> : hasMore ? '滑到底部自动加载更多' : '已经到底了'}</div>}</div></div>}</div><Sidebar donors={data.donors} notice={data.notice} /></div></div></>
+  return <><SiteStats stats={data.stats} /><LedBanner banners={data.banners} /><div className="main-content"><SearchBox onSearch={onSearch} searching={searching} initialQuery={query} initialType={searchTypeRef.current} />{err && <div className="alert alert-error">{err}</div>}<div className="home-layout"><div>{users ? <UserResults users={users} hasMore={usersHasMore} loadingMore={usersLoadingMore} onMore={loadMoreUsers} /> : <div className="card animate-fadeInUp"><div className="card-header"><h3><i className="fas fa-fire" style={{ color: 'var(--secondary)' }} /> 最新帖子</h3>{searching && <span className="mini-busy">刷新中</span>}</div><div>{searching && posts.length === 0 ? <PostListSkeleton count={5} /> : posts.length ? posts.map(p => <PostItem key={p.id} post={p} innerRef={postFlipRef(p.id)} />) : <div className="empty-state search-empty"><i className="fas fa-search" /><p>{query ? `没有找到“${query}”相关帖子` : '还没有帖子'}</p><small>{query ? '换个关键词，或切到文章/频道看看。' : '成为第一个发帖的人。'}</small>{query && <button className="btn btn-sm btn-secondary" onClick={() => onSearch('', 'posts')}>查看全部帖子</button>}</div>}{posts.length > 0 && <div className="infinite-loader">{loadingMore ? <><i className="fas fa-spinner fa-spin" /> 正在加载下一页...</> : hasMore ? '滑到底部自动加载更多' : '已经到底了'}</div>}</div></div>}</div><Sidebar donors={data.donors} notice={data.notice} /></div></div></>
 }
 
 function CaptchaBox({ value, onChange, captchaId, onChallenge }) {
@@ -2202,7 +2227,7 @@ function ChannelDetail({ slug }) {
     <div className="channel-hero card"><div className="card-body"><span className="channel-pill">频道</span><h1>{data.channel.name}</h1><p>{data.channel.description || '频道内容由管理员发布，用户可浏览和评论。'}</p></div></div>
     <div className="card"><div className="card-header"><h3><i className="fas fa-list" /> 最新内容</h3></div>
       {data.items.length ? data.items.map((p, idx) => <div className="post-item channel-post-row" key={p.id}>
-        <a className="channel-post-main" href={`/channel-post/${p.id}`}><div className="post-title">{p.title}</div><div className="post-preview">{htmlText(p.preview)}</div></a>
+        <a className="channel-post-main" href={`/channel-post/${p.id}`}><div className="post-title">{p.title}</div><div className="post-preview channel-preview">{channelPreviewText(p.title, p.preview)}</div></a>
         <div className="post-meta"><span><i className="fas fa-user-shield" /> {p.author_name || '管理员'}</span><span><i className="far fa-clock" /> {relativeTime(p.time)}</span><span><i className="far fa-comment" /> {p.comments || 0}</span><span><i className="far fa-eye" /> {p.views || 0}</span>{p.external_url && <a className="source-link inline-source" href={p.external_url} target="_blank" rel="noreferrer"><i className="fas fa-arrow-up-right-from-square" /> {sourceLinkLabel(p.external_url)}</a>}</div>
       </div>) : <div className="empty-state"><i className="fas fa-inbox" /><p>这个频道暂时没有内容</p></div>}
     </div>

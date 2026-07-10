@@ -369,7 +369,33 @@
             -webkit-box-orient: vertical;
             overflow: hidden;
             word-break: break-word;
+            overflow-wrap: anywhere;
         }
+        .post-preview.masked-preview {
+            color: #58677a;
+            background: linear-gradient(90deg, rgba(244,248,252,.92), rgba(248,250,252,.55));
+            border: 1px dashed #d8e2ee;
+            border-radius: 10px;
+            padding: 7px 10px;
+            display: block;
+            -webkit-line-clamp: unset;
+        }
+        .sensitive-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-right: 8px;
+            color: #5f7187;
+            background: #edf4fb;
+            border: 1px solid #dce8f4;
+            border-radius: 999px;
+            padding: 1px 8px;
+            font-size: .72rem;
+            font-weight: 700;
+        }
+        .channel-preview { color:#64748b; }
+        .search-empty { display:grid; gap:8px; justify-items:center; }
+        .search-empty small { color:#8a98a8; }
 
         .post-meta {
             display: flex;
