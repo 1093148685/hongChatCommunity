@@ -105,6 +105,15 @@ function AvatarRing({ user, src, alt = '头像', size = 48, className = '', imgC
 }
 function usernameClass(obj) { return obj?.display_flags?.red_username ? 'username-red' : '' }
 function UsernameBadge({ user }) { return user?.username_badge ? <span className="username-badge" aria-label="昵称图标">{user.username_badge}</span> : null }
+class RenderErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null } }
+  static getDerivedStateFromError(error) { return { error } }
+  componentDidCatch(error, info) { console.error('RenderErrorBoundary', error, info) }
+  render() {
+    if (this.state.error) return <div className="alert alert-error">{this.props.label || '模块渲染失败'}：{String(this.state.error?.message || this.state.error)}</div>
+    return this.props.children
+  }
+}
 function profileThemeClass(user) { return user?.profile_theme ? `profile-theme-${String(user.profile_theme).replace(/[^a-z0-9_-]/gi, '')}` : '' }
 function commentThemeClass(user) { return user?.comment_theme ? `comment-theme-${String(user.comment_theme).replace(/[^a-z0-9_-]/gi, '')}` : '' }
 function isInstantDressupItem(item = {}) {
@@ -661,8 +670,22 @@ function PostItem({ post, innerRef, me, onOpen, onDeleted }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="post-title">{post.pinned && <span className="pin-badge"><i className="fas fa-thumbtack" /> 置顶</span>}{post.title}</div>
         <div className={`post-preview ${preview.sensitive ? 'masked-preview' : ''}`}>{preview.sensitive && <span className="sensitive-chip"><i className="fas fa-shield-halved" /> 已折叠敏感片段</span>}{preview.text}</div>
-        <div className="post-meta"><div className="post-meta-item"><a href={`/user/${post.user_id}`} className={`post-author-name ${usernameClass(post)}`} onClick={e => e.stopPropagation()}>{post.author}</a><UsernameBadge user={post} />{post.role && <span className="role-badge role-super-admin"><i className="fas fa-crown" /> {post.role}</span>}</div><div className="post-meta-item"><i className="far fa-clock" /> {relativeTime(post.time)}</div><div className="post-stats"><span className="post-stat"><i className="far fa-comment" /> {post.comments || ''}</span><span className="post-stat"><i className="far fa-eye" /> {post.views || ''}</span></div></div>
+        <div className="post-meta"><div className="post-meta-item"><a href={`/user/${post.user_id}`} className={`post-author-name ${usernameClass(post)}`} onClick={e => e.stopPropagation()}>{post.author}</a><UsernameBadge user={post} />{post.role && <span className="role-badge role-super-admin"><i className="fas fa-crown" /> {post.role}</span>}</div><div className="post-meta-item"><i className="far fa-clock" /> {relativeTime(post.time)}</div><div className="post-stats"><span className="post-stat"><i className="far fa-comment" /> {post.comments || 0}</span><span className="post-stat"><i className="far fa-eye" /> {post.views || 0}</span></div></div>
         {post.custom_title && <span className="custom-title" style={{ marginTop: 6 }}>{post.custom_title}</span>}
+      </div>
+    </div>
+  </a>
+}
+
+function UserProfilePostRow({ post, innerRef }) {
+  const preview = postPreviewText(post.preview || post.content)
+  return <a ref={innerRef} data-post-id={post.id} href={`/post/${post.id}`} className="post-item user-profile-post-row" style={{ textDecoration: 'none', display: 'block' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+      <AvatarRing user={post} src={post.avatar} size={42} className="post-avatar-ring" />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="post-title">{post.pinned && <span className="pin-badge"><i className="fas fa-thumbtack" /> 置顶</span>}{post.title || '未命名帖子'}</div>
+        <div className={`post-preview ${preview.sensitive ? 'masked-preview' : ''}`}>{preview.text || '暂无预览'}</div>
+        <div className="post-meta"><div className="post-meta-item"><span className={`post-author-name ${usernameClass(post)}`}>{post.author || '未知作者'}</span></div><div className="post-meta-item"><i className="far fa-clock" /> {relativeTime(post.time)}</div><div className="post-stats"><span className="post-stat"><i className="far fa-comment" /> {Number(post.comments || 0)}</span><span className="post-stat"><i className="far fa-eye" /> {Number(post.views || 0)}</span></div></div>
       </div>
     </div>
   </a>
@@ -1527,9 +1550,9 @@ function PostDetail({ id, me }) {
           <div className="post-meta-item detail-counts"><i className="far fa-comment" /> {data.comments.length || ''}<span className="meta-split">|</span><i className="far fa-eye" /> {p.views || ''}</div>
         </div>
       </div>
-      <div className="card-body"><MarkdownRenderer content={p.content} /></div>
+      <div className="card-body post-detail-body"><MarkdownRenderer content={p.content} /></div>
       <div className="main-post-controls">
-        <button type="button" className="main-post-reply-trigger reply create" title={me ? '回复楼主' : '登录后回复'} aria-label={me ? '回复楼主' : '登录后回复'} onClick={() => startReply(null)}><i className="fas fa-reply" /></button>
+        <button type="button" className="main-post-reply-trigger reply create" title={me ? '回复楼主' : '登录后回复'} aria-label={me ? '回复楼主' : '登录后回复'} onClick={() => startReply(null)}><i className="fas fa-reply" /><span>回复</span></button>
         <button ref={postMoreBtnRef} type="button" className="main-post-more-trigger more-toggle" title="更多" aria-label="更多" aria-expanded={postMenuOpen} onClick={() => setPostMenuOpen(v => !v)}><i className="fas fa-ellipsis" /></button>
         <PostMoreMenuPortal anchorRef={postMoreBtnRef} open={postMenuOpen} onClose={() => setPostMenuOpen(false)} canManage={Boolean(me && (me.role === 'admin' || String(me.id) === String(p.user_id)))} onEdit={() => { setPostMenuOpen(false); navigate(`/post/${p.id}/edit`) }} onRemove={() => { setPostMenuOpen(false); deletePost() }} onShare={sharePost} onReport={() => { setPostMenuOpen(false); reportContent('post', p.id) }} />
       </div>
@@ -1899,9 +1922,9 @@ function UserPage({ id, me, setMe }) {
     <div className={`card animate-fadeInUp user-profile-card ${profileThemeClass(u)}`}>
       <div className="card-body user-profile-body"><div className="profile-head-row"><div className="avatar-wrap"><AvatarRing user={u} src={u.avatar} size={108} className="profile-avatar-ring" />{isMe && <AvatarUploader onDone={avatarDone} />}</div><div className="profile-title-block"><h2 className={`profile-name-with-badge ${usernameClass(u)}`}>{u.username}<UsernameBadge user={u} /></h2><div className="profile-badges">{u.role_label ? <span className="role-badge role-super-admin"><i className="fas fa-crown" /> {u.role_label}</span> : <span className="role-badge role-user"><i className="fas fa-user" /> 用户</span>}{u.custom_title && <span className="custom-title">{u.custom_title}</span>}</div></div></div><ProfileStats stats={data.profile_stats} /></div>
     </div>
-    <div className="card animate-fadeInUp"><div className="card-header fold-head"><h3><i className="fas fa-pen-nib" style={{ color: 'var(--primary)' }} /> TA 的帖子 <span className="mini-busy">{data.posts_total || 0}</span></h3><button className="btn btn-sm btn-secondary" onClick={() => setShowPosts(!showPosts)}>{showPosts ? '折叠' : '展开'}</button></div>{showPosts && <div>{data.posts.length ? data.posts.map(p => <PostItem key={p.id} post={p} innerRef={postFlipRef(p.id)} />) : <div className="empty-state"><i className="fas fa-feather-pointed" /><p>TA 还没有发表过帖子</p></div>}{data.posts_has_more && <div className="infinite-loader"><button className="btn btn-sm btn-secondary" onClick={morePosts} disabled={loadingPosts}>{loadingPosts ? '加载中...' : '加载更多帖子'}</button></div>}</div>}</div>
+    <div className="card animate-fadeInUp"><div className="card-header fold-head"><h3><i className="fas fa-pen-nib" style={{ color: 'var(--primary)' }} /> TA 的帖子 <span className="mini-busy">{data.posts_total || 0}</span></h3><button className="btn btn-sm btn-secondary" onClick={() => setShowPosts(!showPosts)}>{showPosts ? '折叠' : '展开'}</button></div>{showPosts && <RenderErrorBoundary label="帖子列表渲染失败"><div>{data.posts.length ? data.posts.map(p => <UserProfilePostRow key={p.id} post={p} innerRef={postFlipRef(p.id)} />) : <div className="empty-state"><i className="fas fa-feather-pointed" /><p>TA 还没有发表过帖子</p></div>}{data.posts_has_more && <div className="infinite-loader"><button className="btn btn-sm btn-secondary" onClick={morePosts} disabled={loadingPosts}>{loadingPosts ? '加载中...' : '加载更多帖子'}</button></div>}</div></RenderErrorBoundary>}</div>
     {isMe && <div className="card animate-fadeInUp" style={{ animationDelay: '0.08s' }}><div className="card-header fold-head"><h3><i className="fas fa-receipt" style={{ color: '#f59e0b' }} /> 我的兑换记录 <span className="mini-busy">{data.market_orders_total || 0}</span></h3><button className="btn btn-sm btn-secondary" onClick={() => setShowOrders(!showOrders)}>{showOrders ? '折叠' : '展开'}</button></div>{showOrders && <div>{data.market_orders?.length ? data.market_orders.map(o => <OrderRow order={o} key={o.id} onChanged={handleOrderChanged} />) : <div className="empty-state"><i className="fas fa-receipt" /><p>{me ? '暂无兑换记录' : '登录后查看个人兑换记录'}</p></div>}{data.market_orders_has_more && <div className="infinite-loader"><button className="btn btn-sm btn-secondary" onClick={moreOrders} disabled={loadingOrders}>{loadingOrders ? '加载中...' : '加载更多兑换记录'}</button></div>}</div>}</div>}
-    {isMe && <div className="card animate-fadeInUp" style={{ animationDelay: '0.1s' }}><div className="card-header fold-head"><h3><i className="fas fa-message" style={{ color: 'var(--secondary)' }} /> 被评论消息 {data.unread_notifications > 0 && <span className="bubble-badge red-badge inline-bubble">{data.unread_notifications > 99 ? '99+' : data.unread_notifications}</span>}</h3><div className="admin-actions">{data.unread_notifications > 0 && <button className="btn btn-sm btn-secondary" onClick={readAll}>全部已读</button>}<button className="btn btn-sm btn-secondary" onClick={() => setShowComments(!showComments)}>{showComments ? '折叠' : '展开'}</button></div></div>{showComments && <div>{data.received_comments?.length ? data.received_comments.map(c => <button className={`post-item notification-row ${!c.read ? 'is-unread' : ''}`} onClick={() => readOne(c)} key={c.id}><div className="reply-row"><img className="post-avatar" src={safeAvatar(c.avatar)} onError={onAvatarError} /><div className="reply-main"><div className="reply-head"><b>{c.author} 评论了你的帖子</b><span>{relativeTime(c.time)}</span></div><div className="post-preview">《{c.post_title}》</div></div>{!c.read && <span className="unread-dot" />}</div></button>) : <div className="empty-state"><i className="fas fa-comment-slash" /><p>暂无被评论消息</p></div>}{data.received_comments_has_more && <div className="infinite-loader"><button className="btn btn-sm btn-secondary" onClick={moreComments} disabled={loadingComments}>{loadingComments ? '加载中...' : '加载更多评论'}</button></div>}</div>}</div>}
+    {isMe && <div className="card animate-fadeInUp" style={{ animationDelay: '0.1s' }}><div className="card-header fold-head profile-fold-head"><h3><i className="fas fa-message" style={{ color: 'var(--secondary)' }} /> 评论提醒 {data.unread_notifications > 0 && <span className="bubble-badge red-badge inline-bubble">{data.unread_notifications > 99 ? '99+' : data.unread_notifications}</span>}</h3><div className="admin-actions profile-compact-actions">{data.unread_notifications > 0 && <button className="btn btn-sm btn-secondary" onClick={readAll}>已读</button>}<button className="btn btn-sm btn-secondary" onClick={() => setShowComments(!showComments)}>{showComments ? '收起' : '展开'}</button></div></div>{showComments && <div>{data.received_comments?.length ? data.received_comments.map(c => <button className={`post-item notification-row ${!c.read ? 'is-unread' : ''}`} onClick={() => readOne(c)} key={c.id}><div className="reply-row"><img className="post-avatar" src={safeAvatar(c.avatar)} onError={onAvatarError} /><div className="reply-main"><div className="reply-head"><b>{c.author} 评论了你的帖子</b><span>{relativeTime(c.time)}</span></div><div className="post-preview">《{c.post_title}》</div></div>{!c.read && <span className="unread-dot" />}</div></button>) : <div className="empty-state"><i className="fas fa-comment-slash" /><p>暂无评论提醒</p></div>}{data.received_comments_has_more && <div className="infinite-loader"><button className="btn btn-sm btn-secondary" onClick={moreComments} disabled={loadingComments}>{loadingComments ? '加载中...' : '加载更多评论'}</button></div>}</div>}</div>}
     {isMe && <div className="card animate-fadeInUp" style={{ animationDelay: '0.12s' }}><div className="card-header fold-head"><h3><i className="fas fa-paper-plane" style={{ color: '#16a34a' }} /> 我发出的评论 <span className="mini-busy">{data.sent_comments_total || 0}</span></h3><button className="btn btn-sm btn-secondary" onClick={() => setShowSentComments(!showSentComments)}>{showSentComments ? '折叠' : '展开'}</button></div>{showSentComments && <div>{data.sent_comments?.length ? data.sent_comments.map(c => <a className="post-item notification-row sent-comment-row" href={`/post/${c.post_id}#comment-${c.id}`} key={c.id}><div className="reply-row"><img className="post-avatar" src={safeAvatar(c.owner_avatar)} onError={onAvatarError} /><div className="reply-main"><div className="reply-head"><b>回复了 {c.owner_name} 的帖子</b><span>{relativeTime(c.time)}</span></div><div className="post-preview">《{c.post_title}》</div><div className="sent-comment-content">{c.content}</div></div></div></a>) : <div className="empty-state"><i className="fas fa-comment-dots" /><p>还没有发出过评论</p></div>}{data.sent_comments_has_more && <div className="infinite-loader"><button className="btn btn-sm btn-secondary" onClick={moreSentComments} disabled={loadingSentComments}>{loadingSentComments ? '加载中...' : '加载更多发出的评论'}</button></div>}</div>}</div>}
     <div className="back-home"><a className="btn btn-secondary" href="/"><i className="fas fa-arrow-left" /> 返回首页</a></div>
   </div></div></>
@@ -2272,6 +2295,7 @@ function AdminPage({ me }) {
     ['articles', '文章', 'fa-book-open'],
     ['market', '泓市场', 'fa-store'],
     ['music', '音乐', 'fa-music'],
+    ['automation', '自动化中心', 'fa-robot'],
     ['settings', '系统设置', 'fa-gear'],
   ]
   const [tab, setTab] = useState('overview')
@@ -2328,6 +2352,7 @@ function AdminPage({ me }) {
     {tab === 'articles' && <AdminArticles data={data.articles} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'market' && <AdminMarket data={data.market} setAdminData={setData} draft={draft} setDraft={setDraft} run={run} />}
     {tab === 'music' && <AdminMusic data={data.music} draft={draft} setDraft={setDraft} run={run} />}
+    {tab === 'automation' && <AdminAutomation data={data.automation} draft={draft} setDraft={setDraft} run={run} load={load} />}
     {tab === 'settings' && <AdminSettings data={data.settings} draft={draft} setDraft={setDraft} run={run} />} 
   </div>
 }
@@ -2632,6 +2657,35 @@ function AdminSettings({ data, draft, setDraft, run }) {
   </div>
 }
 
+function AdminAutomation({ data, draft, setDraft, run, load }) {
+  const clients = data?.clients || []
+  const secrets = data?.secrets || []
+  const webhooks = data?.webhooks || []
+  const logs = data?.logs || []
+  const scopeOptions = data?.scope_options || []
+  const client = draft.automationClient || { name:'', description:'', enabled:true, scopes:['posts.write','articles.write','channels.write','channel_posts.write'], allowed_ips:[] }
+  const webhook = draft.automationWebhook || { name:'', target_url:'', events:['post.created','article.created'], enabled:true, client_id:'' }
+  const setClient = (k, v) => setDraft({ ...draft, automationClient: { ...client, [k]: v } })
+  const setWebhook = (k, v) => setDraft({ ...draft, automationWebhook: { ...webhook, [k]: v } })
+  const toggleScope = key => {
+    const has = (client.scopes || []).includes(key)
+    setClient('scopes', has ? client.scopes.filter(x => x !== key) : [...(client.scopes || []), key])
+  }
+  const createClient = () => client.name?.trim() && run(() => api('/api/admin/automation/clients', { method:'POST', body: JSON.stringify({ ...client, allowed_ips: (client.allowed_ips || []).filter(Boolean) }) }).then(r => { setDraft({ ...draft, automationClient: { name:'', description:'', enabled:true, scopes:['posts.write'], allowed_ips:[] } }); return r }))
+  const rotateKey = id => run(() => api(`/api/admin/automation/clients/${id}/rotate-key`, { method:'POST', body: JSON.stringify({ reason:'admin rotate' }) }), { reload:true, apply: r => r?.plain_key && prompt('新 Automation Key（请立即保存）', r.plain_key) })
+  const createWebhook = () => webhook.name?.trim() && webhook.target_url?.trim() && run(() => api('/api/admin/automation/webhooks', { method:'POST', body: JSON.stringify({ ...webhook, client_id: webhook.client_id ? Number(webhook.client_id) : null }) }).then(r => { setDraft({ ...draft, automationWebhook: { name:'', target_url:'', events:['post.created','article.created'], enabled:true, client_id:'' } }); return r }), { reload:true, apply: r => r?.secret && prompt('Webhook Secret（请立即保存）', r.secret) })
+  return <div className="admin-card"><div className="admin-card-head"><h3><i className="fas fa-robot" /> 自动化中心</h3><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => load('automation')}>刷新</button><a className="btn btn-sm btn-secondary" href="/api/automation/docs.md" target="_blank">API 文档</a><a className="btn btn-sm btn-secondary" href="/api/automation/openapi.json" target="_blank">OpenAPI JSON</a></div></div>
+    <div className="alert alert-info">本页对齐 HLOOL Mail 的自动化形态：API Key、Webhooks、API Docs、Logs。当前为第一阶段，已可管理密钥与回调骨架；公开写接口下一阶段补齐。</div>
+    <div className="admin-grid governance-grid">
+      <div className="admin-card"><h3>创建 Automation Client</h3><div className="settings-grid"><label><span>名称</span><input className="form-input" value={client.name || ''} onChange={e => setClient('name', e.target.value)} placeholder="AI 发帖助手" /></label><label><span>描述</span><input className="form-input" value={client.description || ''} onChange={e => setClient('description', e.target.value)} placeholder="给 AI 使用的社区自动化客户端" /></label><label><span>启用</span><select className="form-select" value={client.enabled ? '1' : '0'} onChange={e => setClient('enabled', e.target.value === '1')}><option value="1">启用</option><option value="0">停用</option></select></label><label className="settings-wide"><span>允许 IP（每行一个，可空）</span><textarea className="form-textarea" value={(client.allowed_ips || []).join('\n')} onChange={e => setClient('allowed_ips', e.target.value.split('\n').map(x => x.trim()).filter(Boolean))} placeholder="203.0.113.10" /></label><div className="settings-wide"><span>Scopes</span><div className="admin-actions">{scopeOptions.map(s => <label key={s.key} className="checkbox-group"><input type="checkbox" checked={(client.scopes || []).includes(s.key)} onChange={() => toggleScope(s.key)} /><span>{s.label}</span></label>)}</div></div></div><div className="admin-actions settings-actions"><button className="btn btn-primary" onClick={createClient}>创建客户端</button></div></div>
+      <div className="admin-card"><h3>创建 Webhook</h3><div className="settings-grid"><label><span>名称</span><input className="form-input" value={webhook.name || ''} onChange={e => setWebhook('name', e.target.value)} placeholder="AI 工作流回调" /></label><label><span>目标 URL</span><input className="form-input" value={webhook.target_url || ''} onChange={e => setWebhook('target_url', e.target.value)} placeholder="https://example.com/webhook" /></label><label><span>绑定 Client</span><select className="form-select" value={webhook.client_id || ''} onChange={e => setWebhook('client_id', e.target.value)}><option value="">不绑定</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label><label><span>启用</span><select className="form-select" value={webhook.enabled ? '1' : '0'} onChange={e => setWebhook('enabled', e.target.value === '1')}><option value="1">启用</option><option value="0">停用</option></select></label><label className="settings-wide"><span>事件（逗号分隔）</span><input className="form-input" value={(webhook.events || []).join(', ')} onChange={e => setWebhook('events', e.target.value.split(',').map(x => x.trim()).filter(Boolean))} placeholder="post.created, article.created" /></label></div><div className="admin-actions settings-actions"><button className="btn btn-primary" onClick={createWebhook}>创建 Webhook</button></div></div>
+      <div className="admin-card"><h3>Automation Clients</h3>{clients.length ? clients.map(c => <div className="admin-row" key={c.id}><div><b>{c.name}</b><p>{c.description || '无描述'}</p><small>{c.enabled ? '启用' : '停用'} · scopes: {(c.scopes || []).join(', ') || '无'}{c.allowed_ips?.length ? ` · IP: ${c.allowed_ips.join(', ')}` : ''}</small></div><div className="admin-actions"><button className="btn btn-sm btn-secondary" onClick={() => rotateKey(c.id)}>轮换密钥</button></div></div>) : <div className="empty-state"><i className="fas fa-key" /><p>暂无 Automation Client</p></div>}</div>
+      <div className="admin-card"><h3>API Keys</h3>{secrets.length ? secrets.map(k => <div className="admin-row" key={k.id}><div><b>{k.key_prefix}</b><p>client #{k.client_id} · {k.status}</p><small>创建于 {k.created_at}{k.last_used_at ? ` · 最近使用 ${k.last_used_at}` : ''}{k.last_used_ip ? ` · IP ${k.last_used_ip}` : ''}</small></div></div>) : <div className="empty-state"><i className="fas fa-key" /><p>暂无 API Key</p></div>}</div>
+      <div className="admin-card"><h3>Webhooks</h3>{webhooks.length ? webhooks.map(w => <div className="admin-row" key={w.id}><div><b>{w.name}</b><p>{w.target_url}</p><small>{w.enabled ? '启用' : '停用'} · events: {(w.events || []).join(', ')} · secret: {w.secret_preview}</small></div></div>) : <div className="empty-state"><i className="fas fa-webhook" /><p>暂无 Webhook</p></div>}</div>
+      <div className="admin-card"><h3>最近调用日志</h3>{logs.length ? logs.map((l, idx) => <div className="admin-line" key={idx}><span><b>{l.action}</b><small>{l.status} · client {l.client_id || '-'} · {l.created_at}</small></span></div>) : <div className="empty-state"><i className="fas fa-list" /><p>暂无自动化日志</p></div>}</div>
+    </div>
+  </div>
+}
 
 function ExchangeModal({ item, balance, busy, onClose, onSubmit }) {
   const [step, setStep] = useState('confirm')

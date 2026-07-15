@@ -220,11 +220,12 @@ def market_item_fulfillment_method(item: sqlite3.Row | dict[str, Any]) -> str:
 
 
 def market_order_to_dict(o: sqlite3.Row) -> dict[str, Any]:
+    title = o["title"] if "title" in o.keys() else (o["item_title"] if "item_title" in o.keys() else "")
     data = {
         "id": o["id"],
         "item_id": o["item_id"],
-        "title": o["title"] if "title" in o.keys() else o["item_title"],
-        "item_title": o["title"] if "title" in o.keys() else o["item_title"],
+        "title": title,
+        "item_title": title,
         "price": o["price"],
         "cost_points": o["cost_points"],
         "status": o["status"],
@@ -753,6 +754,83 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS automation_clients(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                scopes_json TEXT NOT NULL DEFAULT '[]',
+                allowed_ips_json TEXT NOT NULL DEFAULT '[]',
+                created_by INTEGER,
+                updated_by INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(created_by) REFERENCES users(id),
+                FOREIGN KEY(updated_by) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS automation_secrets(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER NOT NULL,
+                key_prefix TEXT NOT NULL UNIQUE,
+                key_hash TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                last_used_at TEXT DEFAULT '',
+                last_used_ip TEXT DEFAULT '',
+                reveal_hint TEXT DEFAULT '',
+                created_by INTEGER,
+                revoked_by INTEGER,
+                revoked_at TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(client_id) REFERENCES automation_clients(id) ON DELETE CASCADE,
+                FOREIGN KEY(created_by) REFERENCES users(id),
+                FOREIGN KEY(revoked_by) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS automation_logs(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER,
+                secret_id INTEGER,
+                actor_type TEXT NOT NULL DEFAULT 'api_key',
+                action TEXT NOT NULL,
+                target_type TEXT DEFAULT '',
+                target_id TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'success',
+                request_ip TEXT DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(client_id) REFERENCES automation_clients(id) ON DELETE SET NULL,
+                FOREIGN KEY(secret_id) REFERENCES automation_secrets(id) ON DELETE SET NULL
+            );
+            CREATE TABLE IF NOT EXISTS automation_webhooks(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER,
+                name TEXT NOT NULL,
+                target_url TEXT NOT NULL,
+                events_json TEXT NOT NULL DEFAULT '[]',
+                secret TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_test_at TEXT DEFAULT '',
+                created_by INTEGER,
+                updated_by INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(client_id) REFERENCES automation_clients(id) ON DELETE SET NULL,
+                FOREIGN KEY(created_by) REFERENCES users(id),
+                FOREIGN KEY(updated_by) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS automation_webhook_deliveries(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                webhook_id INTEGER NOT NULL,
+                event_name TEXT NOT NULL,
+                target_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                response_code INTEGER NOT NULL DEFAULT 0,
+                response_body TEXT NOT NULL DEFAULT '',
+                error_message TEXT NOT NULL DEFAULT '',
+                request_body TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                delivered_at TEXT DEFAULT '',
+                FOREIGN KEY(webhook_id) REFERENCES automation_webhooks(id) ON DELETE CASCADE
+            );
             CREATE INDEX IF NOT EXISTS idx_market_items_category_active ON market_items(category, enabled, id);
             CREATE INDEX IF NOT EXISTS idx_market_orders_user_created ON market_orders(user_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_market_orders_status_created ON market_orders(status, created_at DESC, id DESC);
@@ -760,6 +838,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_point_ledger_user_created ON point_ledger(user_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_user_points_available ON user_points(available_points);
             CREATE INDEX IF NOT EXISTS idx_music_sources_enabled_sort ON music_api_sources(enabled, sort_order, id);
+            CREATE INDEX IF NOT EXISTS idx_automation_clients_enabled_id ON automation_clients(enabled, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_automation_secrets_client_status ON automation_secrets(client_id, status, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_automation_logs_client_created ON automation_logs(client_id, created_at DESC, id DESC);
+            CREATE INDEX IF NOT EXISTS idx_automation_webhooks_enabled_id ON automation_webhooks(enabled, id DESC);
             CREATE INDEX IF NOT EXISTS idx_posts_pinned_created_id ON posts(pinned DESC, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_posts_user_created ON posts(user_id, created_at DESC, id DESC);
             CREATE INDEX IF NOT EXISTS idx_posts_title ON posts(title);
@@ -1496,6 +1578,37 @@ class AdminDonorIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     amount: str = Field(min_length=1, max_length=80)
     donated_at: str = Field(min_length=1, max_length=40)
+
+
+class AutomationClientIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str | None = Field(default='', max_length=500)
+    enabled: bool = True
+    scopes: list[str] = Field(default_factory=list)
+    allowed_ips: list[str] = Field(default_factory=list)
+
+
+class AutomationClientRotateIn(BaseModel):
+    reason: str | None = Field(default='', max_length=200)
+
+class AutomationWebhookIn(BaseModel):
+    client_id: int | None = None
+    name: str = Field(min_length=1, max_length=80)
+    target_url: str = Field(min_length=1, max_length=500)
+    events: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+
+class AutomationClientUpdateIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    enabled: bool | None = None
+    scopes: list[str] | None = None
+    allowed_ips: list[str] | None = None
+
+
+class AutomationSecretRevokeIn(BaseModel):
+    reason: str | None = Field(default='', max_length=500)
 
 
 class SiteSettingsIn(BaseModel):
@@ -2568,6 +2681,771 @@ async def create_post(payload: PostIn, authorization: str | None = Header(defaul
     return {"ok": True, "id": post_id, "post": post, "current_points": int(current_points or 0)}
 
 
+@app.post("/api/automation/posts")
+async def automation_create_post(payload: PostIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'posts.write')
+    title = payload.title.strip()
+    content = payload.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail='标题和内容不能为空')
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO posts(user_id,title,content,views,pinned,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (auth['actor_user_id'], title, content, 0, 0, now(), now()),
+        )
+        post_id = cur.lastrowid
+        hot_score = (update_hot_rank(conn, post_id, inject_bonus=True) or {}).get('score', 0)
+        post = fetch_post_dict(conn, post_id)
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.post.create', target_type='post', target_id=str(post_id), request_ip=auth['ip'], metadata={'title': title})
+    if post is not None:
+        post['hot_score'] = round(float(hot_score or 0), 4)
+    dispatch_automation_webhooks('post.created', {'post_id': post_id, 'post': post}, client_id=auth['client_id'])
+    await feed_realtime_manager.broadcast({"type": "post_created", "post_id": post_id, "post": post})
+    return {"ok": True, "id": post_id, "post": post}
+
+
+@app.patch("/api/posts/{post_id}")
+async def update_post(post_id: int, payload: PostIn, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    title = payload.title.strip()
+    content = payload.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="标题和内容不能为空")
+    with db() as conn:
+        row = conn.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="帖子不存在")
+        if row["user_id"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="无权编辑这个帖子")
+        conn.execute("UPDATE posts SET title=?, content=?, updated_at=? WHERE id=?", (title, content, now(), post_id))
+        update_hot_rank(conn, post_id, inject_bonus=False)
+        post = fetch_post_dict(conn, post_id)
+    await feed_realtime_manager.broadcast({"type": "post_updated", "post_id": post_id, "post": post})
+    return {"ok": True, "post": post}
+
+
+@app.delete("/api/posts/{post_id}")
+async def delete_post(post_id: int, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    with db() as conn:
+        row = conn.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
+        if not row:
+            return {"ok": True}
+        if row["user_id"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="无权删除这个帖子")
+        comment_ids = [r["id"] for r in conn.execute("SELECT id FROM comments WHERE post_id=?", (post_id,)).fetchall()]
+        if comment_ids:
+            placeholders = ",".join("?" for _ in comment_ids)
+            conn.execute(f"DELETE FROM point_ledger WHERE ref_type='comment' AND ref_id IN ({placeholders})", comment_ids)
+        conn.execute("DELETE FROM comment_notifications WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM email_notification_log WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM content_reports WHERE post_id=? OR (target_type='post' AND target_id=?)", (post_id, post_id))
+        if comment_ids:
+            placeholders = ",".join("?" for _ in comment_ids)
+            conn.execute(f"DELETE FROM content_reports WHERE target_type='comment' AND target_id IN ({placeholders})", comment_ids)
+        conn.execute("DELETE FROM point_ledger WHERE ref_type='post' AND ref_id=?", (post_id,))
+        conn.execute("DELETE FROM comments WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM post_unique_views WHERE post_id=?", (post_id,))
+        conn.execute("DELETE FROM posts WHERE id=?", (post_id,))
+        refresh_user_points(conn, row["user_id"])
+    await feed_realtime_manager.broadcast({"type": "post_deleted", "post_id": post_id})
+    return {"ok": True}
+
+
+@app.get("/api/posts/{post_id}")
+def get_post(post_id: int, request: Request, authorization: str | None = Header(default=None)):
+    viewer = current_user(authorization)
+    with db() as conn:
+        unique_view = record_unique_view(conn, post_id, request, viewer)
+        if unique_view:
+            conn.execute("UPDATE posts SET views=views+1 WHERE id=?", (post_id,))
+        row = conn.execute(
+            """
+            SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id AND (COALESCE(c.deleted_at,'')='' OR EXISTS (SELECT 1 FROM comments child WHERE child.reply_to_comment_id=c.id AND child.post_id=c.post_id))) AS comment_count
+            FROM posts p JOIN users u ON u.id=p.user_id WHERE p.id=?
+            """,
+            (post_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="帖子不存在")
+        comments = conn.execute(
+            """
+            SELECT c.*, u.username, u.avatar, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme, u.role, u.role_label, u.rare_perks,
+                   ru.id AS reply_user_id, ru.username AS reply_author, ru.avatar AS reply_avatar,
+                   rc.content AS reply_content, rc.deleted_at AS reply_deleted_at,
+                   (SELECT COUNT(*) FROM comments child WHERE child.reply_to_comment_id=c.id AND child.post_id=c.post_id AND COALESCE(child.deleted_at,'')='') AS reply_count,
+                   ((CASE WHEN strftime('%s','now') - strftime('%s', c.created_at) < 60 THEN 1000000 ELSE 0 END) +
+                    ((SELECT COUNT(*) FROM comments child WHERE child.reply_to_comment_id=c.id AND child.post_id=c.post_id AND COALESCE(child.deleted_at,'')='') * 1000) +
+                    strftime('%s', c.created_at)) AS comment_rank_score
+            FROM comments c
+            JOIN users u ON u.id=c.user_id
+            LEFT JOIN comments rc ON rc.id=c.reply_to_comment_id AND rc.post_id=c.post_id
+            LEFT JOIN users ru ON ru.id=rc.user_id
+            WHERE c.post_id=?
+              AND (COALESCE(c.deleted_at,'')='' OR EXISTS (SELECT 1 FROM comments child WHERE child.reply_to_comment_id=c.id AND child.post_id=c.post_id))
+            ORDER BY comment_rank_score DESC, c.id DESC
+            """,
+            (post_id,),
+        ).fetchall()
+    return {"post": post_row_to_dict(row), "comments": [comment_row_to_dict(c, viewer) for c in comments]}
+
+
+def _record_comment_notification(conn: sqlite3.Connection, post: sqlite3.Row, actor: sqlite3.Row, comment_id: int, content: str) -> None:
+    owner_id = post["user_id"]
+    if owner_id == actor["id"]:
+        return
+    message = f"{actor['username']} 评论了你的帖子《{post['title']}》"
+    conn.execute(
+        "INSERT INTO comment_notifications(user_id,actor_id,post_id,comment_id,message,created_at) VALUES(?,?,?,?,?,?)",
+        (owner_id, actor["id"], post["id"], comment_id, message, now()),
+    )
+    settings = get_settings(conn, include_secret=True)
+    limit = int(settings.get("comment_email_limit_24h") or 8)
+    if not settings.get("email_enabled") or limit <= 0:
+        return
+    cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    sent_count = conn.execute(
+        "SELECT COUNT(*) FROM email_notification_log WHERE user_id=? AND post_id=? AND created_at>=?",
+        (owner_id, post["id"], cutoff),
+    ).fetchone()[0]
+    if sent_count >= limit:
+        return
+    # 邮箱通知采用硬限流记录。实际 SMTP 发送可接入配置；当前先保证不会因海量评论刷爆邮件。
+    conn.execute("INSERT INTO email_notification_log(user_id,post_id,comment_id,created_at) VALUES(?,?,?,?)", (owner_id, post["id"], comment_id, now()))
+    conn.execute("UPDATE comment_notifications SET email_sent=1 WHERE comment_id=?", (comment_id,))
+
+
+@app.post("/api/posts/{post_id}/comments")
+async def add_comment(post_id: int, payload: CommentIn, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    content = normalize_comment_content(payload.content)
+    with db() as conn:
+        exists = conn.execute("SELECT * FROM posts WHERE id=?", (post_id,)).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="帖子不存在")
+        reply_to_comment_id = payload.reply_to_comment_id
+        if reply_to_comment_id:
+            reply_exists = conn.execute("SELECT id FROM comments WHERE id=? AND post_id=?", (reply_to_comment_id, post_id)).fetchone()
+            if not reply_exists:
+                raise HTTPException(status_code=400, detail="回复的评论不存在")
+        ts = now()
+        cur = conn.execute("INSERT INTO comments(post_id,user_id,content,reply_to_comment_id,created_at) VALUES(?,?,?,?,?)", (post_id, user["id"], content, reply_to_comment_id, ts))
+        comment_id = cur.lastrowid
+        award_points(conn, user["id"], 3, "发表评论", "comment", comment_id)
+        _record_comment_notification(conn, exists, user, comment_id, content)
+        comment = fetch_comment_dict(conn, post_id, comment_id, user)
+        hot_score = (update_hot_rank(conn, post_id, inject_bonus=True) or {}).get('score', 0)
+        post = fetch_post_dict(conn, post_id)
+        comment_count = conn.execute("SELECT COUNT(*) FROM comments WHERE post_id=? AND COALESCE(deleted_at,'')=''", (post_id,)).fetchone()[0]
+        current_points = refresh_user_points(conn, user["id"])
+    if post is not None:
+        post["hot_score"] = round(float(hot_score or 0), 4)
+    bus_payload = {
+        "type": "post_bumped",
+        "post_id": post_id,
+        "post": post,
+        "last_reply_user": {"id": user["id"], "username": user["username"], "avatar": user["avatar"] or DEFAULT_AVATAR},
+        "last_reply_time": ts,
+        "latest_comment_excerpt": content[:120],
+        "comment_id": comment_id,
+    }
+    await presence_manager.broadcast(post_id, {"type": "comment_created", "post_id": post_id, "comment_id": comment_id, "comment": comment})
+    await feed_realtime_manager.broadcast(bus_payload)
+    return {"ok": True, "id": comment_id, "comment": comment, "comment_count": int(comment_count or 0), "current_points": int(current_points or 0)}
+
+
+@app.patch("/api/posts/{post_id}/comments/{comment_id}")
+async def update_comment(post_id: int, comment_id: int, payload: CommentIn, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    content = normalize_comment_content(payload.content)
+    with db() as conn:
+        row = conn.execute("SELECT * FROM comments WHERE id=? AND post_id=?", (comment_id, post_id)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="评论不存在")
+        if (row["deleted_at"] if "deleted_at" in row.keys() else ""):
+            raise HTTPException(status_code=400, detail="已删除的评论不能编辑")
+        if row["user_id"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="无权编辑这条评论")
+        conn.execute("UPDATE comments SET content=?, updated_at=? WHERE id=?", (content, now(), comment_id))
+        comment = fetch_comment_dict(conn, post_id, comment_id, user)
+    await presence_manager.broadcast(post_id, {"type": "comment_updated", "post_id": post_id, "comment_id": comment_id, "comment": comment})
+    return {"ok": True, "comment": comment}
+
+
+@app.delete("/api/posts/{post_id}/comments/{comment_id}")
+async def delete_comment(post_id: int, comment_id: int, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    with db() as conn:
+        row = conn.execute("SELECT * FROM comments WHERE id=? AND post_id=?", (comment_id, post_id)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="评论不存在")
+        if row["user_id"] != user["id"] and user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="无权删除这条评论")
+        if (row["deleted_at"] if "deleted_at" in row.keys() else ""):
+            return {"ok": True}
+        deleted_by_admin = 1 if user["role"] == "admin" and row["user_id"] != user["id"] else 0
+        conn.execute(
+            "UPDATE comments SET content='', deleted_at=?, deleted_by=?, deleted_by_admin=?, updated_at=? WHERE id=?",
+            (now(), user["id"], deleted_by_admin, now(), comment_id),
+        )
+        comment = fetch_comment_dict(conn, post_id, comment_id, user)
+        has_visible_replies = conn.execute("SELECT COUNT(*) FROM comments WHERE post_id=? AND reply_to_comment_id=? AND COALESCE(deleted_at,'')=''", (post_id, comment_id)).fetchone()[0] > 0
+    await presence_manager.broadcast(post_id, {"type": "comment_deleted", "post_id": post_id, "comment_id": comment_id, "comment": comment, "visible": has_visible_replies})
+    return {"ok": True, "comment": comment, "visible": has_visible_replies}
+
+
+@app.get("/api/users")
+def users(q: str = "", page: int = 1, page_size: int = 30, limit: int | None = None, offset: int | None = None, authorization: str | None = Header(default=None)):
+    q_clean = q.strip()
+    with db() as conn:
+        if q_clean or int(page or 1) > 1 or limit is not None or offset is not None:
+            require_user_if_guest_restricted(conn, authorization)
+    like = f"%{q_clean}%"
+    if limit is not None or offset is not None:
+        page_size = limit or page_size
+        offset_value = max(0, int(offset or 0))
+        page = (offset_value // max(1, int(page_size or 30))) + 1
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 30), 100))
+    offset_value = (page - 1) * page_size
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM users WHERE ?='' OR username LIKE ? OR COALESCE(email,'') LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?", (q_clean, like, like, page_size, offset_value)).fetchall()
+        total = conn.execute("SELECT COUNT(*) FROM users WHERE ?='' OR username LIKE ? OR COALESCE(email,'') LIKE ?", (q_clean, like, like)).fetchone()[0]
+    return {"items": [public_user(u) for u in rows], "total": total, "page": page, "page_size": page_size, "limit": page_size, "offset": offset_value, "has_more": offset_value + len(rows) < total}
+
+
+@app.get("/api/users/{user_key}")
+def user_detail(user_key: str, posts_page: int = 1, comments_page: int = 1, sent_comments_page: int = 1, orders_page: int = 1, page_size: int = 10, authorization: str | None = Header(default=None)):
+    page_size = max(1, min(int(page_size or 10), 30))
+    posts_page = max(1, int(posts_page or 1))
+    comments_page = max(1, int(comments_page or 1))
+    sent_comments_page = max(1, int(sent_comments_page or 1))
+    orders_page = max(1, int(orders_page or 1))
+    with db() as conn:
+        user = conn.execute("SELECT * FROM users WHERE id=? AND COALESCE(deleted_at,'')=''", (int(user_key),)).fetchone() if str(user_key).isdigit() else conn.execute("SELECT * FROM users WHERE username=? AND COALESCE(deleted_at,'')=''", (str(user_key),)).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="用户不存在")
+        user_id = int(user['id'])
+        rows = conn.execute("""
+            SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id) AS comment_count
+            FROM posts p JOIN users u ON u.id=p.user_id WHERE p.user_id=? ORDER BY p.created_at DESC LIMIT ? OFFSET ?
+            """, (user_id, page_size, (posts_page-1)*page_size)).fetchall()
+        post_total = conn.execute("SELECT COUNT(*) FROM posts WHERE user_id=?", (user_id,)).fetchone()[0]
+        sent_comment_total_all = conn.execute("SELECT COUNT(*) FROM comments WHERE user_id=?", (user_id,)).fetchone()[0]
+        views_total = conn.execute("SELECT COALESCE(SUM(views),0) FROM posts WHERE user_id=?", (user_id,)).fetchone()[0]
+        max_comments = conn.execute("SELECT COALESCE(MAX(comment_count),0) FROM (SELECT COUNT(c.id) AS comment_count FROM posts p LEFT JOIN comments c ON c.post_id=p.id WHERE p.user_id=? GROUP BY p.id)", (user_id,)).fetchone()[0]
+        last_active_row = conn.execute("SELECT MAX(ts) AS last_active FROM (SELECT created_at AS ts FROM posts WHERE user_id=? UNION ALL SELECT created_at AS ts FROM comments WHERE user_id=?)", (user_id, user_id)).fetchone()
+        community_age_days = days_between(user["created_at"] if "created_at" in user.keys() else "")
+        profile_stats = {"joined_at": user["created_at"] if "created_at" in user.keys() else "", "community_age_days": community_age_days, "posts_count": int(post_total or 0), "comments_count": int(sent_comment_total_all or 0), "views_count": int(views_total or 0), "max_post_comments": int(max_comments or 0), "last_active_at": (last_active_row["last_active"] if last_active_row else "") or ""}
+        point_balance = conn.execute("SELECT COALESCE(SUM(delta),0) FROM point_ledger WHERE user_id=?", (user_id,)).fetchone()[0]
+        order_count = conn.execute("SELECT COUNT(*) FROM market_orders WHERE user_id=?", (user_id,)).fetchone()[0]
+        profile_stats["hongcoin_balance"] = int(point_balance or 0)
+        profile_stats["market_orders_count"] = int(order_count or 0)
+        viewer = current_user(authorization)
+        is_owner = bool(viewer and viewer["id"] == user_id)
+        if is_owner:
+            comment_rows = conn.execute("""
+                SELECT c.*, a.username AS author, a.avatar, p.id AS post_id, p.title AS post_title,
+                       n.id AS notification_id, n.read_at AS notification_read_at
+                FROM comments c JOIN posts p ON p.id=c.post_id JOIN users a ON a.id=c.user_id
+                LEFT JOIN comment_notifications n ON n.comment_id=c.id AND n.user_id=?
+                WHERE p.user_id=? AND c.user_id<>p.user_id ORDER BY c.created_at DESC, c.id DESC LIMIT ? OFFSET ?
+                """, (user_id, user_id, page_size, (comments_page-1)*page_size)).fetchall()
+            comment_total = conn.execute("SELECT COUNT(*) FROM comments c JOIN posts p ON p.id=c.post_id WHERE p.user_id=? AND c.user_id<>p.user_id", (user_id,)).fetchone()[0]
+            sent_rows = conn.execute("SELECT c.*, p.title AS post_title, p.id AS post_id, owner.username AS owner_name, owner.avatar AS owner_avatar FROM comments c JOIN posts p ON p.id=c.post_id JOIN users owner ON owner.id=p.user_id WHERE c.user_id=? ORDER BY c.created_at DESC, c.id DESC LIMIT ? OFFSET ?", (user_id, page_size, (sent_comments_page-1)*page_size)).fetchall()
+            sent_total = conn.execute("SELECT COUNT(*) FROM comments WHERE user_id=?", (user_id,)).fetchone()[0]
+            order_rows = conn.execute("SELECT * FROM market_orders WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", (user_id, page_size, (orders_page-1)*page_size)).fetchall()
+            order_total = conn.execute("SELECT COUNT(*) FROM market_orders WHERE user_id=?", (user_id,)).fetchone()[0]
+            unread = conn.execute("SELECT COUNT(*) FROM comment_notifications WHERE user_id=? AND read_at IS NULL", (user_id,)).fetchone()[0]
+            return {"user": public_user(user), "posts": [post_row_to_dict(r) for r in rows], "posts_total": post_total, "posts_has_more": posts_page*page_size < post_total, "received_comments": [{**dict(r), 'time': r['created_at'], 'read': bool(r['notification_read_at'])} for r in comment_rows], "received_comments_total": comment_total, "received_comments_has_more": comments_page*page_size < comment_total, "sent_comments": [{**dict(r), 'time': r['created_at']} for r in sent_rows], "sent_comments_total": sent_total, "sent_comments_has_more": sent_comments_page*page_size < sent_total, "market_orders": market_orders_to_dicts(conn, order_rows, user_id), "market_orders_total": order_total, "market_orders_has_more": orders_page*page_size < order_total, "unread_notifications": unread, "profile_stats": profile_stats}
+        return {"user": public_user(user), "posts": [post_row_to_dict(r) for r in rows], "posts_total": post_total, "posts_has_more": posts_page*page_size < post_total, "received_comments": [], "received_comments_total": 0, "received_comments_has_more": False, "sent_comments": [], "sent_comments_total": 0, "sent_comments_has_more": False, "market_orders": [], "market_orders_total": 0, "market_orders_has_more": False, "unread_notifications": 0, "profile_stats": profile_stats}
+
+@app.get("/api/chrome")
+def chrome():
+    init_db()
+    with db() as conn:
+        return get_chrome_data(conn)
+
+
+@app.get("/api/home")
+def home():
+    init_db()
+    with db() as conn:
+        conn.execute("UPDATE site_stats SET value=value+1 WHERE key='visits'")
+        rows = conn.execute(
+            """
+            SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id) AS comment_count
+            FROM posts p JOIN users u ON u.id=p.user_id
+            ORDER BY p.created_at DESC
+            LIMIT 30
+            """
+        ).fetchall()
+        payload = get_chrome_data(conn)
+    payload["posts"] = [post_row_to_dict(r) for r in rows]
+    return payload
+
+
+@app.post("/api/register")
+def register(payload: RegisterIn, request: Request):
+    email = normalize_email(payload.email)
+    if not email:
+        raise HTTPException(status_code=400, detail="请填写邮箱")
+    ip = client_ip(request)
+    with db() as conn:
+        if conn.execute("SELECT 1 FROM banned_identities WHERE email=? OR (ip<>'' AND ip=?)", (email, ip)).fetchone():
+            raise HTTPException(status_code=403, detail="该邮箱或网络地址已被禁止注册")
+        verify_captcha_if_enabled(conn, payload.captcha_id, payload.captcha)
+        verify_email_code(conn, email, payload.email_code)
+        try:
+            cur = conn.execute(
+                "INSERT INTO users(username,email,password_hash,role,avatar,bio,created_at,register_ip,last_login_ip) VALUES(?,?,?,?,?,?,?,?,?)",
+                (payload.username.strip(), email, hash_password(payload.password), "user", current_default_avatar(conn), "", now(), ip, ip),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="用户名或邮箱已存在")
+        token = secrets.token_urlsafe(32)
+        conn.execute("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)", (token, cur.lastrowid, now()))
+        user = conn.execute("SELECT * FROM users WHERE id=?", (cur.lastrowid,)).fetchone()
+    return {"token": token, "user": public_user(user)}
+
+
+@app.post("/api/login")
+def login(payload: LoginIn, request: Request):
+    ip = client_ip(request)
+    with db() as conn:
+        if conn.execute("SELECT 1 FROM banned_identities WHERE ip<>'' AND ip=?", (ip,)).fetchone():
+            raise HTTPException(status_code=403, detail="当前网络地址已被禁止访问")
+        verify_captcha_if_enabled(conn, payload.captcha_id, payload.captcha)
+        user = conn.execute("SELECT * FROM users WHERE (username=? OR email=?) AND COALESCE(deleted_at,'')=''", (payload.username, payload.username)).fetchone()
+        if not user or not verify_password(payload.password, user["password_hash"]):
+            raise HTTPException(status_code=400, detail="用户名或密码错误")
+        ensure_account_active(conn, user)
+        token = secrets.token_urlsafe(32)
+        conn.execute("INSERT INTO sessions(token,user_id,created_at) VALUES(?,?,?)", (token, user["id"], now()))
+        conn.execute("UPDATE users SET last_login_ip=? WHERE id=?", (ip, user["id"]))
+        user = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+    return {"token": token, "user": public_user(user)}
+
+
+@app.get("/api/me", response_model=None)
+def me(authorization: str | None = Header(default=None)):
+    found = current_user(authorization)
+    if found:
+        with db() as conn:
+            ensure_account_active(conn, found)
+    return {"user": public_user(found) if found else None}
+
+
+@app.get("/api/settings")
+def public_settings():
+    init_db()
+    with db() as conn:
+        s = get_settings(conn)
+    return {"settings": {"site_name": s.get("site_name"), "site_logo": s.get("site_logo"), "default_avatar": s.get("default_avatar"), "captcha_enabled": s.get("captcha_enabled"), "qidao_oauth_enabled": s.get("qidao_oauth_enabled"), "qidao_client_id": s.get("qidao_client_id"), "qidao_scope": s.get("qidao_scope")}}
+
+
+@app.get("/api/oauth/qidao/start")
+def qidao_oauth_start(request: Request, next: str = "/"):
+    with db() as conn:
+        settings = get_settings(conn, include_secret=True)
+        if not settings.get("qidao_oauth_enabled"):
+            raise HTTPException(status_code=400, detail="栖岛登录尚未启用")
+        client_id = str(settings.get("qidao_client_id") or "").strip()
+        if not client_id:
+            raise HTTPException(status_code=400, detail="栖岛 Client ID 未配置")
+        state = secrets.token_urlsafe(24)
+        redirect_to = next if next.startswith("/") and not next.startswith("//") else "/"
+        conn.execute("INSERT INTO oauth_states(state,provider,redirect_to,created_at) VALUES(?,?,?,?)", (state, "qidao", redirect_to, now()))
+    redirect_uri = f"{base_url_from_request(request)}/api/oauth/qidao/callback"
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": str(settings.get("qidao_scope") or "profile email"),
+        "state": state,
+        "response_type": "code",
+    }
+    return RedirectResponse("https://api.qidao.tvcloud.top/oauth/authorize?" + urllib.parse.urlencode(params))
+
+
+@app.get("/api/oauth/qidao/callback")
+def qidao_oauth_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None, error_description: str | None = None):
+    if error:
+        return RedirectResponse(f"/login?oauth_error={urllib.parse.quote(error_description or error)}")
+    if not code or not state:
+        return RedirectResponse("/login?oauth_error=%E6%A0%96%E5%B2%9B%E5%9B%9E%E8%B0%83%E7%BC%BA%E5%B0%91%E5%8F%82%E6%95%B0")
+    with db() as conn:
+        row = conn.execute("SELECT * FROM oauth_states WHERE state=? AND provider='qidao'", (state,)).fetchone()
+        if not row:
+            return RedirectResponse("/login?oauth_error=state%E9%AA%8C%E8%AF%81%E5%A4%B1%E8%B4%A5")
+        conn.execute("DELETE FROM oauth_states WHERE state=?", (state,))
+        settings = get_settings(conn, include_secret=True)
+        if not settings.get("qidao_oauth_enabled"):
+            raise HTTPException(status_code=400, detail="栖岛登录尚未启用")
+        client_id = str(settings.get("qidao_client_id") or "").strip()
+        client_secret = str(settings.get("qidao_client_secret") or "").strip()
+        if not client_id or not client_secret:
+            raise HTTPException(status_code=400, detail="栖岛 Client ID/Secret 未配置完整")
+        redirect_uri = f"{base_url_from_request(request)}/api/oauth/qidao/callback"
+        token_payload = {"grant_type": "authorization_code", "client_id": client_id, "client_secret": client_secret, "code": code, "redirect_uri": redirect_uri}
+        try:
+            token_data = first_oauth_success(
+                [
+                    ("https://api.qidao.tvcloud.top/oauth2/token", "POST", token_payload, None),
+                    ("https://api.qidao.tvcloud.top/oauth/token", "POST", token_payload, None),
+                    ("https://api.qidao.tvcloud.top/oauth/access_token", "POST", token_payload, None),
+                ],
+                need_access_token=True,
+            )
+            if isinstance(token_data.get("data"), dict) and not token_data.get("access_token"):
+                token_data = {**token_data, **token_data["data"]}
+            access_token = str(token_data.get("access_token") or "")
+            if not access_token:
+                raise HTTPException(status_code=400, detail="栖岛未返回 access_token")
+            profile = first_oauth_success(
+                [
+                    ("https://api.qidao.tvcloud.top/oauth2/userinfo/oauth?" + urllib.parse.urlencode({"access_token": access_token}), "GET", None, None),
+                    ("https://api.qidao.tvcloud.top/oauth2/userinfo?" + urllib.parse.urlencode({"access_token": access_token}), "GET", None, None),
+                    ("https://api.qidao.tvcloud.top/oauth/userinfo?" + urllib.parse.urlencode({"access_token": access_token}), "GET", None, None),
+                    ("https://api.qidao.tvcloud.top/userinfo", "GET", None, {"Authorization": f"Bearer {access_token}"}),
+                ]
+            )
+            token, user = finish_qidao_login(conn, profile, token_data, request)
+        except HTTPException as exc:
+            return oauth_error_redirect(str(exc.detail or "栖岛登录失败"))
+        except Exception as exc:
+            return oauth_error_redirect(f"栖岛登录失败：{exc}")
+        redirect_to = row["redirect_to"] or "/"
+    safe_user = json.dumps(public_user(user), ensure_ascii=False).replace("</", "<\\/")
+    safe_token = json.dumps(token).replace("</", "<\\/")
+    safe_next = json.dumps(redirect_to).replace("</", "<\\/")
+    html_body = f"""<!doctype html><meta charset=\"utf-8\"><title>栖岛登录成功</title><script>
+localStorage.setItem('yhdet_token', {safe_token});
+localStorage.setItem('yhdet_user', JSON.stringify({safe_user}));
+location.replace({safe_next});
+</script><p>登录成功，正在返回...</p>"""
+    return HTMLResponse(html_body)
+
+
+@app.get("/api/oauth/connect/start")
+def connect_oauth_start_disabled():
+    raise HTTPException(
+        status_code=410,
+        detail="泓聊 Connect 是给第三方网站接入的登录提供方；泓社区自身请使用本地账号登录。第三方网站应跳转到 https://connect.ccocc.cyou/oauth/authorize。",
+    )
+
+
+@app.get("/api/oauth/connect/callback")
+def connect_oauth_callback_disabled():
+    raise HTTPException(
+        status_code=410,
+        detail="泓社区不再作为 Connect 消费端。第三方网站请在自己的站点实现 callback，并调用 https://connect.ccocc.cyou/api/oauth/token 与 /api/oauth/userinfo。",
+    )
+
+
+@app.get("/api/me/notifications")
+def my_notifications(page: int = 1, page_size: int = 30, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 30), 100))
+    offset_value = (page - 1) * page_size
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT n.*, a.username AS actor_name, p.title AS post_title
+            FROM comment_notifications n
+            JOIN users a ON a.id=n.actor_id
+            JOIN posts p ON p.id=n.post_id
+            WHERE n.user_id=? ORDER BY n.created_at DESC, n.id DESC LIMIT ? OFFSET ?
+            """,
+            (user["id"], page_size, offset_value),
+        ).fetchall()
+        unread = conn.execute("SELECT COUNT(*) FROM comment_notifications WHERE user_id=? AND COALESCE(read_at,'')=''", (user["id"],)).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM comment_notifications WHERE user_id=?", (user["id"],)).fetchone()[0]
+    return {
+        "unread": unread,
+        "items": [{"id": r["id"], "post_id": r["post_id"], "comment_id": r["comment_id"], "actor_id": r["actor_id"], "actor_name": r["actor_name"], "post_title": r["post_title"], "message": r["message"], "read": bool(r["read_at"]), "created_at": r["created_at"]} for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": offset_value + len(rows) < total,
+    }
+
+
+@app.post("/api/me/notifications/read")
+def mark_notifications_read(payload: NotificationReadIn | None = None, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    target_id = payload.id if payload else None
+    with db() as conn:
+        if target_id:
+            conn.execute("UPDATE comment_notifications SET read_at=? WHERE id=? AND user_id=? AND COALESCE(read_at,'')=''", (now(), target_id, user["id"]))
+        else:
+            conn.execute("UPDATE comment_notifications SET read_at=? WHERE user_id=? AND COALESCE(read_at,'')=''", (now(), user["id"]))
+        unread = conn.execute("SELECT COUNT(*) FROM comment_notifications WHERE user_id=? AND COALESCE(read_at,'')=''", (user["id"],)).fetchone()[0]
+    return {"ok": True, "unread": unread}
+
+
+@app.post("/api/me/notifications/{notification_id}/read")
+def mark_one_notification_read(notification_id: int, authorization: str | None = Header(default=None)):
+    return mark_notifications_read(NotificationReadIn(id=notification_id), authorization)
+
+
+@app.post("/api/me/avatar")
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    x: int = Form(0),
+    y: int = Form(0),
+    width: int = Form(0),
+    height: int = Form(0),
+    authorization: str | None = Header(default=None),
+):
+    user = require_user(current_user(authorization))
+    content = await file.read(8 * 1024 * 1024 + 1)
+    if len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="头像不能超过 8MB")
+    if not content:
+        raise HTTPException(status_code=400, detail="请选择头像文件")
+    try:
+        src = Image.open(io.BytesIO(content))
+        src = ImageOps.exif_transpose(src).convert("RGBA")
+    except (UnidentifiedImageError, OSError, ValueError):
+        raise HTTPException(status_code=400, detail="图片文件无法识别")
+
+    natural_w, natural_h = src.size
+    if width <= 0 or height <= 0:
+        side = min(natural_w, natural_h)
+        x = (natural_w - side) // 2
+        y = (natural_h - side) // 2
+        width = height = side
+    x = max(0, min(int(x), natural_w - 1))
+    y = max(0, min(int(y), natural_h - 1))
+    width = max(1, min(int(width), natural_w - x))
+    height = max(1, min(int(height), natural_h - y))
+    box = (x, y, x + width, y + height)
+    avatar = src.crop(box).resize((512, 512), Image.Resampling.LANCZOS)
+
+    name = f"avatar_{user['id']}_{secrets.token_hex(8)}.png"
+    path = UPLOAD_DIR / name
+    out = io.BytesIO()
+    avatar.save(out, format="PNG", optimize=True)
+    path.write_bytes(out.getvalue())
+    url = f"/uploads/{name}"
+    with db() as conn:
+        conn.execute("UPDATE users SET avatar=? WHERE id=?", (url, user["id"]))
+        refreshed = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+    return {"ok": True, "url": url, "user": public_user(refreshed)}
+
+
+def public_user(user: sqlite3.Row | None, default_avatar: str = DEFAULT_AVATAR) -> dict[str, Any] | None:
+    if not user:
+        return None
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "role": user["role"],
+        "role_label": user["role_label"] or ("超管" if user["role"] == "admin" else ""),
+        "custom_title": user["custom_title"],
+        "avatar": user["avatar"] or default_avatar,
+        "avatar_border_style": (user["avatar_border_style"] if "avatar_border_style" in user.keys() else "") or DEFAULT_AVATAR_BORDER_STYLE,
+        "bio": user["bio"],
+        "created_at": user["created_at"],
+        "account_status": user["account_status"] if "account_status" in user.keys() else "active",
+        "frozen_until": user["frozen_until"] if "frozen_until" in user.keys() else "",
+        "display_flags": user_display_flags(user),
+        **user_decoration(user),
+    }
+
+
+def plain_text_excerpt(text: str, limit: int = 160) -> str:
+    cleaned = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", text or "")
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cleaned)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = re.sub(r"[#*_`>]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:limit]
+
+
+def site_origin(request: Request) -> str:
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    return f"{proto}://{host}"
+
+
+def safe_path_avatar(path: str) -> str:
+    return path if str(path).startswith("/") else DEFAULT_AVATAR
+
+
+FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#4a90d9"/><stop offset="1" stop-color="#7c3aed"/></linearGradient></defs><rect width="64" height="64" rx="18" fill="url(#g)"/><path d="M17 22a10 10 0 0 1 10-10h10a10 10 0 0 1 10 10v7a10 10 0 0 1-10 10h-8l-10 9v-9h-2a10 10 0 0 1-10-10z" fill="white" opacity=".94"/><circle cx="26" cy="26" r="3" fill="#4a90d9"/><circle cx="38" cy="26" r="3" fill="#7c3aed"/></svg>"""
+
+
+@app.get("/favicon.svg")
+def favicon_svg():
+    return Response(FAVICON_SVG, media_type="image/svg+xml")
+
+
+@app.head("/favicon.svg")
+def favicon_svg_head():
+    return Response(status_code=200, media_type="image/svg+xml")
+
+
+@app.get("/api/seo/post/{post_id}")
+def post_seo(post_id: int, request: Request):
+    with db() as conn:
+        row = conn.execute(
+            """
+            SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id AND COALESCE(c.deleted_at,'')='') AS comment_count
+            FROM posts p JOIN users u ON u.id=p.user_id WHERE p.id=?
+            """,
+            (post_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="帖子不存在")
+        post = post_row_to_dict(row)
+    origin = site_origin(request)
+    avatar = post.get("avatar") or DEFAULT_AVATAR
+    image = f"{origin}{safe_path_avatar(avatar)}" if str(avatar).startswith("/") else avatar
+    return {
+        "title": f"{post['title']} - 泓聊社区",
+        "description": plain_text_excerpt(post.get("content") or post.get("preview") or "泓聊社区帖子"),
+        "url": f"{origin}/post/{post_id}",
+        "image": image or f"{origin}/favicon.svg",
+        "site_name": "泓聊社区",
+        "author": post.get("author") or "泓聊社区",
+        "published_time": post.get("time"),
+        "modified_time": post.get("updated_at") or post.get("time"),
+    }
+
+
+@app.get("/api/posts")
+def list_posts(q: str = "", page: int = 1, page_size: int = 30, limit: int | None = None, offset: int | None = None, authorization: str | None = Header(default=None)):
+    q_clean = q.strip()
+    with db() as conn:
+        if q_clean or int(page or 1) > 1 or limit is not None or offset is not None:
+            require_user_if_guest_restricted(conn, authorization)
+    like = f"%{q_clean}%"
+    if limit is not None or offset is not None:
+        page_size = limit or page_size
+        offset_value = max(0, int(offset or 0))
+        page = (offset_value // max(1, int(page_size or 30))) + 1
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 30), 100))
+    offset_value = (page - 1) * page_size
+    rank_mode = not q_clean
+    rows = []
+    total = 0
+    rank_scores: dict[int, float] = {}
+    if rank_mode:
+        ids_scores = hot_rank_page(offset_value, page_size)
+        ids = [pid for pid, _ in ids_scores]
+        rank_scores = {pid: score for pid, score in ids_scores}
+        if len(ids) < page_size and offset_value == 0:
+            rebuild_hot_rank()
+            ids_scores = hot_rank_page(offset_value, page_size)
+            ids = [pid for pid, _ in ids_scores]
+            rank_scores = {pid: score for pid, score in ids_scores}
+        with db() as conn:
+            total = hot_rank_total(conn)
+            if ids:
+                placeholders = ','.join('?' for _ in ids)
+                fetched = conn.execute(f"""
+                    SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                           (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id AND COALESCE(c.deleted_at,'')='') AS comment_count
+                    FROM posts p JOIN users u ON u.id=p.user_id
+                    WHERE p.id IN ({placeholders})
+                """, ids).fetchall()
+                by_id = {int(r['id']): r for r in fetched}
+                rows = [by_id[pid] for pid in ids if pid in by_id]
+            else:
+                rows = conn.execute("""
+                    SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                           (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id AND COALESCE(c.deleted_at,'')='') AS comment_count
+                    FROM posts p JOIN users u ON u.id=p.user_id
+                    ORDER BY p.pinned DESC, COALESCE(NULLIF(p.updated_at,''), p.created_at) DESC, p.id DESC
+                    LIMIT ? OFFSET ?
+                """, (page_size, offset_value)).fetchall()
+    else:
+        with db() as conn:
+            rows = conn.execute(
+                """
+                SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                       (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id AND COALESCE(c.deleted_at,'')='') AS comment_count
+                FROM posts p JOIN users u ON u.id=p.user_id
+                WHERE p.title LIKE ? OR p.content LIKE ? OR u.username LIKE ?
+                ORDER BY p.pinned DESC, COALESCE(NULLIF(p.updated_at,''), p.created_at) DESC, p.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (like, like, like, page_size, offset_value),
+            ).fetchall()
+            total = conn.execute(
+                """
+                SELECT COUNT(*) FROM posts p JOIN users u ON u.id=p.user_id
+                WHERE p.title LIKE ? OR p.content LIKE ? OR u.username LIKE ?
+                """,
+                (like, like, like),
+            ).fetchone()[0]
+    items = []
+    for r in rows:
+        item = post_row_to_dict(r)
+        if rank_mode:
+            item['hot_score'] = round(float(rank_scores.get(int(r['id']), 0.0)), 4)
+        items.append(item)
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "limit": page_size,
+        "offset": offset_value,
+        "rank_mode": "redis_zset" if rank_mode else "search_sql",
+        "has_more": offset_value + len(rows) < total,
+    }
+
+
+@app.post("/api/posts")
+async def create_post(payload: PostIn, authorization: str | None = Header(default=None)):
+    user = require_user(current_user(authorization))
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO posts(user_id,title,content,views,pinned,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (user["id"], payload.title.strip(), payload.content.strip(), 0, 0, now(), now()),
+        )
+        post_id = cur.lastrowid
+        award_points(conn, user["id"], 12, "发布帖子", "post", post_id)
+        hot_score = (update_hot_rank(conn, post_id, inject_bonus=True) or {}).get('score', 0)
+        post = fetch_post_dict(conn, post_id)
+        current_points = refresh_user_points(conn, user["id"])
+    if post is not None:
+        post["hot_score"] = round(float(hot_score or 0), 4)
+    await feed_realtime_manager.broadcast({"type": "post_created", "post_id": post_id, "post": post})
+    return {"ok": True, "id": post_id, "post": post, "current_points": int(current_points or 0)}
+
+
+@app.post("/api/automation/posts")
+async def automation_create_post(payload: PostIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'posts.write')
+    title = payload.title.strip()
+    content = payload.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail='标题和内容不能为空')
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO posts(user_id,title,content,views,pinned,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (auth['actor_user_id'], title, content, 0, 0, now(), now()),
+        )
+        post_id = cur.lastrowid
+        hot_score = (update_hot_rank(conn, post_id, inject_bonus=True) or {}).get('score', 0)
+        post = fetch_post_dict(conn, post_id)
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.post.create', target_type='post', target_id=str(post_id), request_ip=auth['ip'], metadata={'title': title})
+    if post is not None:
+        post['hot_score'] = round(float(hot_score or 0), 4)
+    dispatch_automation_webhooks('post.created', {'post_id': post_id, 'post': post}, client_id=auth['client_id'])
+    await feed_realtime_manager.broadcast({"type": "post_created", "post_id": post_id, "post": post})
+    return {"ok": True, "id": post_id, "post": post}
+
+
 @app.patch("/api/posts/{post_id}")
 async def update_post(post_id: int, payload: PostIn, authorization: str | None = Header(default=None)):
     user = require_user(current_user(authorization))
@@ -3515,6 +4393,38 @@ def admin_create_market_item(payload: MarketItemIn, authorization: str | None = 
     return {"ok": True, "id": cur.lastrowid}
 
 
+@app.get("/api/automation/admin/market")
+def automation_admin_market(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'market.read')
+    with db() as conn:
+        items = conn.execute("SELECT * FROM market_items ORDER BY enabled DESC, id DESC").fetchall()
+        orders = conn.execute("SELECT o.*, u.username, mi.title AS item_title FROM market_orders o JOIN users u ON u.id=o.user_id JOIN market_items mi ON mi.id=o.item_id ORDER BY o.id DESC LIMIT 80").fetchall()
+        ledgers = conn.execute("SELECT l.*, u.username FROM point_ledger l JOIN users u ON u.id=l.user_id ORDER BY l.id DESC LIMIT 80").fetchall()
+    return {
+        'items': [{**dict(i), 'fulfillment_method': market_item_fulfillment_method(i), 'card_key_available': conn.execute("SELECT COUNT(*) FROM product_card_keys WHERE product_id=? AND is_used=0", (i['id'],)).fetchone()[0], 'orders_count': conn.execute("SELECT COUNT(*) FROM market_orders WHERE item_id=?", (i['id'],)).fetchone()[0]} for i in items],
+        'orders': [{'id': o['id'], 'username': o['username'], 'item_title': o['item_title'], 'price': o['price'], 'cost_points': o['cost_points'], 'category': o['category'], 'status': o['status'], 'shipping_info': o['shipping_info'], 'payload': o['payload'] if 'payload' in o.keys() else '', 'delivered_content': o['delivered_content'], 'created_at': o['created_at'], 'fulfilled_at': o['fulfilled_at']} for o in orders],
+        'ledgers': [{'id': l['id'], 'username': l['username'], 'delta': l['delta'], 'reason': l['reason'], 'ref_type': l['ref_type'], 'ref_id': l['ref_id'], 'created_at': l['created_at']} for l in ledgers],
+        'categories': market_categories_payload(),
+    }
+
+
+@app.post("/api/automation/admin/market/items")
+def automation_admin_create_market_item(payload: MarketItemIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'market.write')
+    category = normalize_market_category(payload.category.value if isinstance(payload.category, ProductCategory) else str(payload.category))
+    try: json.loads(payload.payload_json or '{}')
+    except Exception: raise HTTPException(status_code=400, detail='商品参数 JSON 格式不正确')
+    with db() as conn:
+        existing = conn.execute("SELECT id FROM market_items WHERE title=? AND category=? ORDER BY enabled DESC, id ASC LIMIT 1", (payload.title.strip(), category)).fetchone()
+        if existing:
+            conn.execute("UPDATE market_items SET description=?, price=?, stock=?, cover_icon=?, enabled=?, payload_json=?, updated_at=? WHERE id=?", (payload.description.strip(), payload.price, payload.stock, payload.cover_icon.strip() or 'fa-gift', 1 if payload.enabled else 0, payload.payload_json or '{}', now(), existing['id']))
+            write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.update', target_type='market_item', target_id=str(existing['id']), request_ip=auth['ip'])
+            return {'ok': True, 'id': existing['id'], 'updated': True}
+        cur = conn.execute("INSERT INTO market_items(title,description,price,stock,category,cover_icon,enabled,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (payload.title.strip(), payload.description.strip(), payload.price, payload.stock, category, payload.cover_icon.strip() or 'fa-gift', 1 if payload.enabled else 0, payload.payload_json or '{}', now(), now()))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.create', target_type='market_item', target_id=str(cur.lastrowid), request_ip=auth['ip'])
+    return {'ok': True, 'id': cur.lastrowid}
+
+
 @app.put("/api/admin/market/items/{item_id}")
 def admin_update_market_item(item_id: int, payload: MarketItemIn, authorization: str | None = Header(default=None)):
     require_admin(current_user(authorization))
@@ -3533,6 +4443,19 @@ def admin_update_market_item(item_id: int, payload: MarketItemIn, authorization:
     return {"ok": True}
 
 
+@app.put("/api/automation/admin/market/items/{item_id}")
+def automation_admin_update_market_item(item_id: int, payload: MarketItemIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'market.update')
+    category = normalize_market_category(payload.category.value if isinstance(payload.category, ProductCategory) else str(payload.category))
+    try: json.loads(payload.payload_json or '{}')
+    except Exception: raise HTTPException(status_code=400, detail='商品参数 JSON 格式不正确')
+    with db() as conn:
+        cur = conn.execute("UPDATE market_items SET title=?, description=?, price=?, stock=?, category=?, cover_icon=?, enabled=?, payload_json=?, updated_at=? WHERE id=?", (payload.title.strip(), payload.description.strip(), payload.price, payload.stock, category, payload.cover_icon.strip() or 'fa-gift', 1 if payload.enabled else 0, payload.payload_json or '{}', now(), item_id))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='商品不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.update', target_type='market_item', target_id=str(item_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
 @app.patch("/api/admin/market/items/{item_id}/enabled")
 def admin_set_market_item_enabled(item_id: int, payload: dict[str, Any], authorization: str | None = Header(default=None)):
     require_admin(current_user(authorization))
@@ -3542,6 +4465,17 @@ def admin_set_market_item_enabled(item_id: int, payload: dict[str, Any], authori
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="商品不存在")
     return {"ok": True, "enabled": bool(enabled)}
+
+
+@app.patch("/api/automation/admin/market/items/{item_id}/enabled")
+def automation_admin_set_market_item_enabled(item_id: int, payload: dict[str, Any], request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'market.update')
+    enabled = 1 if bool(payload.get('enabled')) else 0
+    with db() as conn:
+        cur = conn.execute("UPDATE market_items SET enabled=?, updated_at=? WHERE id=?", (enabled, now(), item_id))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='商品不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.toggle', target_type='market_item', target_id=str(item_id), request_ip=auth['ip'], metadata={'enabled': bool(enabled)})
+    return {'ok': True, 'enabled': bool(enabled)}
 
 
 @app.delete("/api/admin/market/items/{item_id}")
@@ -3556,6 +4490,21 @@ def admin_delete_market_item(item_id: int, authorization: str | None = Header(de
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="商品不存在")
     return {"ok": True}
+
+
+@app.delete("/api/automation/admin/market/items/{item_id}")
+def automation_admin_delete_market_item(item_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'market.delete')
+    with db() as conn:
+        used = conn.execute("SELECT COUNT(*) FROM market_orders WHERE item_id=?", (item_id,)).fetchone()[0]
+        if used:
+            conn.execute("UPDATE market_items SET enabled=0, updated_at=? WHERE id=?", (now(), item_id))
+            write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.archive', target_type='market_item', target_id=str(item_id), request_ip=auth['ip'])
+            return {'ok': True, 'archived': True, 'message': '已有兑换记录，已下架保留历史记录'}
+        cur = conn.execute("DELETE FROM market_items WHERE id=?", (item_id,))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='商品不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.delete', target_type='market_item', target_id=str(item_id), request_ip=auth['ip'])
+    return {'ok': True}
 
 
 @app.post("/api/admin/market/add-keys")
@@ -3959,6 +4908,100 @@ def admin_bans(authorization: str | None = Header(default=None)):
     return {"items": [{"id": r["id"], "user_id": r["user_id"], "username": r["username"], "email": r["email"], "ip": r["ip"], "reason": r["reason"], "banned_at": r["banned_at"]} for r in rows]}
 
 
+@app.get("/api/automation/admin/users")
+def automation_admin_users(request: Request, q: str = '', x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'users.read')
+    like = f"%{q.strip()}%"
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT u.*,
+                   (SELECT COUNT(*) FROM posts p WHERE p.user_id=u.id) AS post_count,
+                   (SELECT COUNT(*) FROM comments c WHERE c.user_id=u.id) AS comment_count
+            FROM users u
+            WHERE COALESCE(u.deleted_at,'')='' AND (?='' OR u.username LIKE ? OR COALESCE(u.email,'') LIKE ?)
+            ORDER BY u.id ASC
+            """,
+            (q.strip(), like, like),
+        ).fetchall()
+    items = []
+    for u in rows:
+        d = public_user(u)
+        d.update({"email": u["email"], "post_count": u["post_count"], "comment_count": u["comment_count"], "register_ip": u["register_ip"] if "register_ip" in u.keys() else "", "last_login_ip": u["last_login_ip"] if "last_login_ip" in u.keys() else "", "ban_reason": u["ban_reason"] if "ban_reason" in u.keys() else "", "banned_at": u["banned_at"] if "banned_at" in u.keys() else ""})
+        items.append(d)
+    return {"items": items}
+
+
+@app.patch("/api/automation/admin/users/{user_id}")
+def automation_admin_update_user(user_id: int, payload: AdminUserIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'users.update')
+    allowed_roles = {'user', 'admin'}
+    updates=[]; values=[]
+    data = payload.model_dump(exclude_unset=True)
+    if 'role' in data and data['role'] not in allowed_roles:
+        raise HTTPException(status_code=400, detail='角色只能是 user 或 admin')
+    for key in ('role','role_label','custom_title','avatar','bio'):
+        if key in data:
+            updates.append(f"{key}=?"); values.append((data[key] or '').strip() if isinstance(data[key], str) else data[key])
+    if not updates:
+        return {'ok': True}
+    values.append(user_id)
+    with db() as conn:
+        cur=conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", values)
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='用户不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.user.update', target_type='user', target_id=str(user_id), request_ip=auth['ip'], metadata=data)
+    return {'ok': True}
+
+
+@app.post("/api/automation/admin/users/{user_id}/freeze")
+def automation_admin_freeze_user(user_id: int, payload: AdminFreezeIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'users.freeze')
+    until = (datetime.now() + timedelta(days=payload.days)).strftime('%Y-%m-%d %H:%M:%S')
+    reason = (payload.reason or '').strip()
+    with db() as conn:
+        u = conn.execute("SELECT * FROM users WHERE id=? AND COALESCE(deleted_at,'')=''", (user_id,)).fetchone()
+        if not u: raise HTTPException(status_code=404, detail='用户不存在')
+        conn.execute("UPDATE users SET account_status='frozen', frozen_until=?, ban_reason=? WHERE id=?", (until, reason, user_id))
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.user.freeze', target_type='user', target_id=str(user_id), request_ip=auth['ip'], metadata={'days': payload.days, 'reason': reason})
+    return {'ok': True, 'frozen_until': until}
+
+
+@app.post("/api/automation/admin/users/{user_id}/ban")
+def automation_admin_ban_user(user_id: int, payload: AdminBanIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'users.ban')
+    reason = (payload.reason or '').strip()
+    with db() as conn:
+        u = conn.execute("SELECT * FROM users WHERE id=? AND COALESCE(deleted_at,'')=''", (user_id,)).fetchone()
+        if not u: raise HTTPException(status_code=404, detail='用户不存在')
+        ip = (u['last_login_ip'] or u['register_ip'] or '') if 'last_login_ip' in u.keys() else ''
+        conn.execute("INSERT INTO banned_identities(user_id,username,email,ip,reason,banned_at,banned_by,data_json) VALUES(?,?,?,?,?,?,?,?)", (user_id, u['username'], u['email'] or '', ip, reason, now(), auth['actor_user_id'], json.dumps(dict(u), ensure_ascii=False, default=str)))
+        conn.execute("UPDATE users SET account_status='banned', banned_at=?, ban_reason=?, deleted_at=? WHERE id=?", (now(), reason, now(), user_id))
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.user.ban', target_type='user', target_id=str(user_id), request_ip=auth['ip'], metadata={'reason': reason})
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/users/{user_id}")
+def automation_admin_delete_user(user_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'users.delete')
+    with db() as conn:
+        u = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        if not u: raise HTTPException(status_code=404, detail='用户不存在')
+        if u['role'] == 'admin': raise HTTPException(status_code=400, detail='不能硬删除管理员')
+        conn.execute("DELETE FROM comment_notifications WHERE user_id=? OR actor_id=?", (user_id, user_id))
+        conn.execute("DELETE FROM email_notification_log WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM channel_comments WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM comments WHERE user_id=? OR post_id IN (SELECT id FROM posts WHERE user_id=?)", (user_id, user_id))
+        conn.execute("DELETE FROM posts WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        conn.execute("DELETE FROM email_verification_codes WHERE email=?", (u['email'] or '',))
+        conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.user.delete', target_type='user', target_id=str(user_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
 def content_report_to_dict(r: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": r["id"],
@@ -4044,6 +5087,17 @@ def admin_update_report(report_id: int, payload: AdminReportIn, authorization: s
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="举报不存在")
     return {"ok": True}
+
+
+@app.patch("/api/automation/admin/reports/{report_id}")
+def automation_admin_update_report(report_id: int, payload: AdminReportIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'reports.update')
+    with db() as conn:
+        cur = conn.execute("UPDATE content_reports SET status=?, admin_note=?, handled_by=?, handled_at=? WHERE id=?", (payload.status, (payload.admin_note or '').strip(), auth['actor_user_id'], now(), report_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='举报不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.report.update', target_type='report', target_id=str(report_id), request_ip=auth['ip'], metadata=payload.model_dump())
+    return {'ok': True}
 
 
 @app.delete("/api/admin/reports/{report_id}/target")
@@ -4144,6 +5198,103 @@ def admin_delete_comment(comment_id: int, authorization: str | None = Header(def
     return {"ok": True}
 
 
+@app.get("/api/automation/admin/reports")
+def automation_admin_reports(request: Request, status: str = 'open', x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'reports.read')
+    status = (status or 'open').strip()
+    where = "1=1" if status == 'all' else 'r.status=?'
+    params: tuple[Any, ...] = () if status == 'all' else (status,)
+    with db() as conn:
+        rows = conn.execute(f"""
+            SELECT r.*, reporter.username AS reporter, handler.username AS handler,
+                   CASE WHEN r.target_type='post' THEN p.content ELSE c.content END AS target_preview,
+                   COALESCE(p.title, cp.title, '') AS post_title,
+                   COALESCE(pu.username, cu.username, '') AS target_author
+            FROM content_reports r
+            JOIN users reporter ON reporter.id=r.reporter_id
+            LEFT JOIN users handler ON handler.id=r.handled_by
+            LEFT JOIN posts p ON r.target_type='post' AND p.id=r.target_id
+            LEFT JOIN comments c ON r.target_type='comment' AND c.id=r.target_id
+            LEFT JOIN posts cp ON r.target_type='comment' AND cp.id=c.post_id
+            LEFT JOIN users pu ON pu.id=p.user_id
+            LEFT JOIN users cu ON cu.id=c.user_id
+            WHERE {where}
+            ORDER BY CASE r.status WHEN 'open' THEN 0 WHEN 'reviewing' THEN 1 ELSE 2 END, r.id DESC
+            LIMIT 200
+        """, params).fetchall()
+    return {'items': [content_report_to_dict(r) for r in rows]}
+
+
+@app.get("/api/automation/admin/posts")
+def automation_admin_posts(request: Request, q: str = '', x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'posts.read')
+    like = f"%{q.strip()}%"
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT p.*, u.username, u.avatar, u.role, u.role_label, u.custom_title, u.rare_perks, u.avatar_border_style, u.username_badge, u.profile_theme, u.comment_theme,
+                   (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id) AS comment_count
+            FROM posts p JOIN users u ON u.id=p.user_id
+            WHERE ?='' OR p.title LIKE ? OR p.content LIKE ? OR u.username LIKE ?
+            ORDER BY p.pinned DESC, p.id DESC
+            LIMIT 100
+        """, (q.strip(), like, like, like)).fetchall()
+    return {'items': [post_row_to_dict(r) for r in rows]}
+
+
+@app.patch("/api/automation/admin/posts/{post_id}")
+def automation_admin_update_post(post_id: int, payload: AdminPostIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'posts.update')
+    updates=[]; values=[]
+    data = payload.model_dump(exclude_unset=True)
+    for key in ('title','content'):
+        if key in data:
+            updates.append(f"{key}=?"); values.append(data[key].strip())
+    if 'pinned' in data:
+        updates.append('pinned=?'); values.append(1 if data['pinned'] else 0)
+    if updates:
+        updates.append('updated_at=?'); values.append(now()); values.append(post_id)
+        with db() as conn:
+            cur = conn.execute(f"UPDATE posts SET {', '.join(updates)} WHERE id=?", values)
+            if cur.rowcount == 0: raise HTTPException(status_code=404, detail='帖子不存在')
+            write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.post.update', target_type='post', target_id=str(post_id), request_ip=auth['ip'], metadata=data)
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/posts/{post_id}")
+def automation_admin_delete_post(post_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'posts.delete')
+    with db() as conn:
+        conn.execute("DELETE FROM comments WHERE post_id=?", (post_id,))
+        cur = conn.execute("DELETE FROM posts WHERE id=?", (post_id,))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='帖子不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.post.delete', target_type='post', target_id=str(post_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.get("/api/automation/admin/comments")
+def automation_admin_comments(request: Request, q: str = '', x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'comments.read')
+    like = f"%{q.strip()}%"
+    with db() as conn:
+        rows = conn.execute("""
+            SELECT c.*, u.username, p.title AS post_title
+            FROM comments c JOIN users u ON u.id=c.user_id JOIN posts p ON p.id=c.post_id
+            WHERE ?='' OR c.content LIKE ? OR u.username LIKE ? OR p.title LIKE ?
+            ORDER BY c.id DESC LIMIT 100
+        """, (q.strip(), like, like, like)).fetchall()
+    return {'items': [admin_comment_to_dict(c) for c in rows]}
+
+
+@app.delete("/api/automation/admin/comments/{comment_id}")
+def automation_admin_delete_comment(comment_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'comments.delete')
+    with db() as conn:
+        cur = conn.execute("DELETE FROM comments WHERE id=?", (comment_id,))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='评论不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.comment.delete', target_type='comment', target_id=str(comment_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
 @app.get("/api/admin/announcements")
 def admin_announcements(authorization: str | None = Header(default=None)):
     require_admin(current_user(authorization))
@@ -4178,6 +5329,45 @@ def admin_delete_announcement(announcement_id: int, authorization: str | None = 
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="公告不存在")
     return {"ok": True}
+
+
+@app.get("/api/automation/admin/announcements")
+def automation_admin_announcements(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'announcements.read')
+    with db() as conn:
+        rows = conn.execute("SELECT a.*, u.username FROM announcements a JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 50").fetchall()
+    return {"items": [admin_announcement_to_dict(a) for a in rows]}
+
+
+@app.post("/api/automation/admin/announcements")
+def automation_admin_create_announcement(payload: AdminAnnouncementIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'announcements.write')
+    with db() as conn:
+        cur = conn.execute("INSERT INTO announcements(user_id,content,created_at) VALUES(?,?,?)", (auth['actor_user_id'], payload.content.strip(), now()))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.announcement.create', target_type='announcement', target_id=str(cur.lastrowid), request_ip=auth['ip'])
+    return {'ok': True, 'id': cur.lastrowid}
+
+
+@app.patch("/api/automation/admin/announcements/{announcement_id}")
+def automation_admin_update_announcement(announcement_id: int, payload: AdminAnnouncementIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'announcements.update')
+    with db() as conn:
+        cur = conn.execute("UPDATE announcements SET content=? WHERE id=?", (payload.content.strip(), announcement_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='公告不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.announcement.update', target_type='announcement', target_id=str(announcement_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/announcements/{announcement_id}")
+def automation_admin_delete_announcement(announcement_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'announcements.delete')
+    with db() as conn:
+        cur = conn.execute("DELETE FROM announcements WHERE id=?", (announcement_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='公告不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.announcement.delete', target_type='announcement', target_id=str(announcement_id), request_ip=auth['ip'])
+    return {'ok': True}
 
 
 @app.get("/api/admin/donors")
@@ -4216,6 +5406,42 @@ def admin_delete_donor(donor_id: int, authorization: str | None = Header(default
     return {"ok": True}
 
 
+@app.get("/api/automation/admin/donors")
+def automation_admin_donors(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'donors.read')
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM donors ORDER BY id DESC LIMIT 100").fetchall()
+    return {'items': [admin_donor_to_dict(d) for d in rows]}
+
+
+@app.post("/api/automation/admin/donors")
+def automation_admin_create_donor(payload: AdminDonorIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'donors.write')
+    with db() as conn:
+        cur = conn.execute("INSERT INTO donors(name,amount,donated_at) VALUES(?,?,?)", (payload.name.strip(), payload.amount.strip(), payload.donated_at.strip()))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.donor.create', target_type='donor', target_id=str(cur.lastrowid), request_ip=auth['ip'])
+    return {'ok': True, 'id': cur.lastrowid}
+
+
+@app.patch("/api/automation/admin/donors/{donor_id}")
+def automation_admin_update_donor(donor_id: int, payload: AdminDonorIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'donors.update')
+    with db() as conn:
+        cur = conn.execute("UPDATE donors SET name=?, amount=?, donated_at=? WHERE id=?", (payload.name.strip(), payload.amount.strip(), payload.donated_at.strip(), donor_id))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='捐赠记录不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.donor.update', target_type='donor', target_id=str(donor_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/donors/{donor_id}")
+def automation_admin_delete_donor(donor_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'donors.delete')
+    with db() as conn:
+        cur = conn.execute("DELETE FROM donors WHERE id=?", (donor_id,))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='捐赠记录不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.donor.delete', target_type='donor', target_id=str(donor_id), request_ip=auth['ip'])
+    return {'ok': True}
+
 
 @app.get("/api/admin/settings")
 def admin_get_settings(authorization: str | None = Header(default=None)):
@@ -4239,6 +5465,632 @@ def admin_update_settings(payload: SiteSettingsIn, authorization: str | None = H
         updated = get_settings(conn)
     return {"ok": True, "settings": updated}
 
+
+@app.get("/api/automation/admin/settings")
+def automation_admin_get_settings(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'settings.read')
+    with db() as conn:
+        return {'settings': get_settings(conn)}
+
+
+@app.put("/api/automation/admin/settings")
+def automation_admin_update_settings(payload: SiteSettingsIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'settings.update')
+    data = payload.model_dump(exclude_unset=True)
+    with db() as conn:
+        for key, value in data.items():
+            if key in {'smtp_password', 'qidao_client_secret'} and (value is None or value == '***'):
+                continue
+            if key in {'email_enabled', 'guest_access_restricted', 'captcha_enabled', 'qidao_oauth_enabled', 'music_api_enabled', 'banners_enabled'}:
+                value = '1' if value else '0'
+            set_setting(conn, key, value)
+        updated = get_settings(conn)
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.settings.update', target_type='settings', target_id='global', request_ip=auth['ip'], metadata={'keys': sorted(list(data.keys()))})
+    return {'ok': True, 'settings': updated}
+
+
+AUTOMATION_SCOPE_LABELS = {
+    'posts.read': '读取帖子',
+    'posts.write': '创建帖子',
+    'posts.update': '修改帖子',
+    'posts.delete': '删除帖子',
+    'comments.read': '读取评论',
+    'comments.write': '创建评论',
+    'comments.update': '修改评论',
+    'comments.delete': '删除评论',
+    'reports.read': '读取举报',
+    'reports.update': '处理举报',
+    'users.read': '读取用户',
+    'users.update': '修改用户',
+    'users.freeze': '冻结用户',
+    'users.ban': '封禁用户',
+    'users.delete': '硬删除用户',
+    'announcements.read': '读取公告',
+    'announcements.write': '创建公告',
+    'announcements.update': '修改公告',
+    'announcements.delete': '删除公告',
+    'donors.read': '读取捐赠者',
+    'donors.write': '创建捐赠者',
+    'donors.update': '修改捐赠者',
+    'donors.delete': '删除捐赠者',
+    'articles.read': '读取文章',
+    'articles.write': '创建文章',
+    'articles.update': '修改文章',
+    'articles.delete': '删除文章',
+    'article_categories.read': '读取文章分类',
+    'article_categories.write': '创建文章分类',
+    'article_categories.update': '修改文章分类',
+    'article_categories.delete': '删除文章分类',
+    'media.read': '读取素材库',
+    'media.write': '上传素材',
+    'media.delete': '删除素材',
+    'channels.read': '读取频道',
+    'channels.write': '创建频道',
+    'channels.update': '修改频道',
+    'channels.delete': '删除频道',
+    'channels.sync': '同步/测试频道源',
+    'channel_posts.read': '读取频道帖子',
+    'channel_posts.write': '创建频道帖子',
+    'channel_posts.update': '修改频道帖子',
+    'channel_posts.delete': '删除频道帖子',
+    'market.read': '读取泓市场后台',
+    'market.write': '创建市场商品/卡密',
+    'market.update': '修改市场商品/订单',
+    'market.delete': '删除市场商品',
+    'music.read': '读取音乐源',
+    'music.write': '创建音乐源',
+    'music.update': '修改音乐源',
+    'music.delete': '删除音乐源',
+    'settings.read': '读取系统设置',
+    'settings.update': '修改系统设置',
+    'risk.read': '读取风控看板',
+    'overview.read': '读取后台总览',
+    'automation.clients.read': '读取自动化客户端',
+    'automation.clients.write': '创建自动化客户端',
+    'automation.clients.update': '修改自动化客户端',
+    'automation.clients.delete': '删除自动化客户端',
+    'automation.keys.rotate': '轮换自动化密钥',
+    'automation.keys.revoke': '撤销自动化密钥',
+    'automation.webhooks.read': '读取 Webhooks',
+    'automation.webhooks.write': '创建 Webhooks',
+    'automation.webhooks.update': '修改 Webhooks',
+    'automation.webhooks.delete': '删除 Webhooks',
+    'automation.logs.read': '读取自动化日志',
+    'automation.docs.read': '读取自动化文档',
+    'automation.skills.read': '读取自动化 Skill 文档',
+}
+
+
+def automation_client_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    scopes = json.loads(row["scopes_json"] or "[]")
+    allowed_ips = json.loads(row["allowed_ips_json"] or "[]")
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"] or "",
+        "enabled": bool(row["enabled"]),
+        "scopes": scopes,
+        "scope_labels": [{"key": s, "label": AUTOMATION_SCOPE_LABELS.get(s, s)} for s in scopes],
+        "allowed_ips": allowed_ips,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def automation_secret_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "client_id": row["client_id"],
+        "key_prefix": row["key_prefix"],
+        "status": row["status"],
+        "last_used_at": row["last_used_at"] or "",
+        "last_used_ip": row["last_used_ip"] or "",
+        "reveal_hint": row["reveal_hint"] or "",
+        "created_at": row["created_at"],
+    }
+
+
+def automation_webhook_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "client_id": row["client_id"],
+        "name": row["name"],
+        "target_url": row["target_url"],
+        "events": json.loads(row["events_json"] or "[]"),
+        "enabled": bool(row["enabled"]),
+        "secret_preview": (row["secret"] or "")[:10] + "..." if row["secret"] else "",
+        "last_test_at": row["last_test_at"] or "",
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def write_automation_log(conn: sqlite3.Connection, *, client_id: int | None = None, secret_id: int | None = None, action: str, target_type: str = '', target_id: str = '', status: str = 'success', request_ip: str = '', metadata: dict[str, Any] | None = None) -> None:
+    conn.execute(
+        "INSERT INTO automation_logs(client_id,secret_id,actor_type,action,target_type,target_id,status,request_ip,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (client_id, secret_id, 'api_key', action, target_type, target_id, status, request_ip, json.dumps(metadata or {}, ensure_ascii=False), now()),
+    )
+
+
+def make_automation_key() -> tuple[str, str, str]:
+    plain = f"yhdet_auto_{secrets.token_urlsafe(24)}"
+    return plain, plain[:18], hashlib.sha256(plain.encode("utf-8")).hexdigest()
+
+
+def automation_delivery_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "webhook_id": row["webhook_id"],
+        "event_name": row["event_name"],
+        "target_url": row["target_url"],
+        "status": row["status"],
+        "response_code": row["response_code"],
+        "response_body": row["response_body"] or "",
+        "error_message": row["error_message"] or "",
+        "created_at": row["created_at"],
+        "delivered_at": row["delivered_at"] or "",
+    }
+
+
+def deliver_automation_webhook_row(conn: sqlite3.Connection, row: sqlite3.Row, event_name: str, request_body: str) -> int:
+    delivery_id = conn.execute(
+        "INSERT INTO automation_webhook_deliveries(webhook_id,event_name,target_url,status,request_body,created_at) VALUES(?,?,?,?,?,?)",
+        (row['id'], event_name, row['target_url'], 'pending', request_body, now()),
+    ).lastrowid
+    req = urllib.request.Request(
+        row['target_url'],
+        data=request_body.encode('utf-8'),
+        headers={'Content-Type': 'application/json','X-Automation-Event': event_name,'X-Webhook-Secret': row['secret']},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            body = resp.read().decode('utf-8', errors='replace')[:2000]
+            conn.execute("UPDATE automation_webhook_deliveries SET status='success',response_code=?,response_body=?,delivered_at=? WHERE id=?", (int(getattr(resp, 'status', 200) or 200), body, now(), delivery_id))
+        conn.execute("UPDATE automation_webhooks SET last_test_at=?, updated_at=? WHERE id=?", (now(), now(), row['id']))
+    except urllib.error.HTTPError as e:
+        body = (e.read().decode('utf-8', errors='replace') if hasattr(e, 'read') else str(e))[:2000]
+        conn.execute("UPDATE automation_webhook_deliveries SET status='failed',response_code=?,response_body=?,error_message=?,delivered_at=? WHERE id=?", (int(getattr(e, 'code', 0) or 0), body, str(e)[:500], now(), delivery_id))
+    except Exception as e:
+        conn.execute("UPDATE automation_webhook_deliveries SET status='failed',error_message=?,delivered_at=? WHERE id=?", (str(e)[:500], now(), delivery_id))
+    return delivery_id
+
+
+def dispatch_automation_webhooks(event_name: str, payload: dict[str, Any], *, client_id: int | None = None) -> None:
+    request_body = json.dumps({"event": event_name, "data": payload}, ensure_ascii=False)
+    with db() as conn:
+        if client_id:
+            rows = conn.execute(
+                "SELECT * FROM automation_webhooks WHERE enabled=1 AND (client_id=? OR client_id IS NULL) ORDER BY id DESC",
+                (client_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM automation_webhooks WHERE enabled=1 ORDER BY id DESC").fetchall()
+        hooks = []
+        for row in rows:
+            events = json.loads(row['events_json'] or '[]')
+            if event_name in events:
+                hooks.append(row)
+        for row in hooks:
+            deliver_automation_webhook_row(conn, row, event_name, request_body)
+
+
+def get_automation_auth(x_automation_key: str | None, request: Request | None = None, required_scope: str | None = None) -> dict[str, Any]:
+    key = (x_automation_key or '').strip()
+    if not key:
+        raise HTTPException(status_code=401, detail='缺少 X-Automation-Key')
+    key_hash = hashlib.sha256(key.encode('utf-8')).hexdigest()
+    with db() as conn:
+        row = conn.execute(
+            """
+            SELECT s.*, c.name AS client_name, c.enabled AS client_enabled, c.scopes_json, c.allowed_ips_json
+            FROM automation_secrets s
+            JOIN automation_clients c ON c.id=s.client_id
+            WHERE s.key_hash=? AND s.status='active'
+            ORDER BY s.id DESC LIMIT 1
+            """,
+            (key_hash,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail='无效的 Automation Key')
+        if not bool(row['client_enabled']):
+            raise HTTPException(status_code=403, detail='Automation Client 已停用')
+        allowed_ips = json.loads(row['allowed_ips_json'] or '[]')
+        ip = client_ip(request) if request else ''
+        if allowed_ips and ip and ip not in allowed_ips:
+            raise HTTPException(status_code=403, detail='当前 IP 不在 Automation 白名单')
+        scopes = json.loads(row['scopes_json'] or '[]')
+        if required_scope and required_scope not in scopes:
+            raise HTTPException(status_code=403, detail=f'缺少 scope: {required_scope}')
+        actor = conn.execute("SELECT id, username FROM users WHERE role='admin' ORDER BY id LIMIT 1").fetchone()
+        if not actor:
+            raise HTTPException(status_code=500, detail='系统中不存在管理员账号，无法绑定 automation actor')
+        conn.execute("UPDATE automation_secrets SET last_used_at=?, last_used_ip=? WHERE id=?", (now(), ip, row['id']))
+        return {"client_id": row['client_id'], "secret_id": row['id'], "client_name": row['client_name'], "scopes": scopes, "ip": ip, "actor_user_id": actor['id'], "actor_username": actor['username']}
+
+
+@app.get("/api/admin/automation")
+def admin_get_automation(authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        clients = conn.execute("SELECT * FROM automation_clients ORDER BY id DESC").fetchall()
+        secrets_rows = conn.execute("SELECT * FROM automation_secrets ORDER BY id DESC LIMIT 200").fetchall()
+        webhooks = conn.execute("SELECT * FROM automation_webhooks ORDER BY id DESC").fetchall()
+        logs = conn.execute("SELECT * FROM automation_logs ORDER BY id DESC LIMIT 100").fetchall()
+    return {
+        "clients": [automation_client_to_dict(r) for r in clients],
+        "secrets": [automation_secret_to_dict(r) for r in secrets_rows],
+        "webhooks": [automation_webhook_to_dict(r) for r in webhooks],
+        "logs": [dict(r) | {"metadata": json.loads(r["metadata_json"] or "{}") if "metadata_json" in r.keys() else {}} for r in logs],
+        "scope_options": [{"key": k, "label": v} for k, v in AUTOMATION_SCOPE_LABELS.items()],
+    }
+
+
+@app.post("/api/admin/automation/clients")
+def admin_create_automation_client(payload: AutomationClientIn, authorization: str | None = Header(default=None)):
+    admin = require_admin(current_user(authorization))
+    now_ts = now()
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO automation_clients(name,description,enabled,scopes_json,allowed_ips_json,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (payload.name.strip(), (payload.description or '').strip(), 1 if payload.enabled else 0, json.dumps(payload.scopes, ensure_ascii=False), json.dumps(payload.allowed_ips, ensure_ascii=False), admin["id"], admin["id"], now_ts, now_ts),
+        )
+        row = conn.execute("SELECT * FROM automation_clients WHERE id=?", (cur.lastrowid,)).fetchone()
+        write_automation_log(conn, action='automation.client.create', target_type='automation_client', target_id=str(cur.lastrowid), metadata={"name": payload.name.strip()})
+    return {"client": automation_client_to_dict(row)}
+
+
+@app.post("/api/admin/automation/clients/{client_id}/rotate-key")
+def admin_rotate_automation_key(client_id: int, payload: AutomationClientRotateIn, authorization: str | None = Header(default=None)):
+    admin = require_admin(current_user(authorization))
+    plain, prefix, key_hash = make_automation_key()
+    with db() as conn:
+        client = conn.execute("SELECT * FROM automation_clients WHERE id=?", (client_id,)).fetchone()
+        if not client:
+            raise HTTPException(status_code=404, detail="自动化客户端不存在")
+        conn.execute("UPDATE automation_secrets SET status='revoked', revoked_by=?, revoked_at=? WHERE client_id=? AND status='active'", (admin["id"], now(), client_id))
+        cur = conn.execute(
+            "INSERT INTO automation_secrets(client_id,key_prefix,key_hash,status,reveal_hint,created_by,created_at) VALUES(?,?,?,?,?,?,?)",
+            (client_id, prefix, key_hash, 'active', (payload.reason or '').strip(), admin["id"], now()),
+        )
+        row = conn.execute("SELECT * FROM automation_secrets WHERE id=?", (cur.lastrowid,)).fetchone()
+        write_automation_log(conn, client_id=client_id, secret_id=cur.lastrowid, action='automation.secret.rotate', target_type='automation_client', target_id=str(client_id), metadata={"reason": (payload.reason or '').strip()})
+    return {"secret": automation_secret_to_dict(row), "plain_key": plain}
+
+
+@app.patch("/api/admin/automation/clients/{client_id}")
+def admin_update_automation_client(client_id: int, payload: AutomationClientUpdateIn, authorization: str | None = Header(default=None)):
+    admin = require_admin(current_user(authorization))
+    data = payload.model_dump(exclude_unset=True)
+    updates = []
+    values = []
+    if 'name' in data:
+        updates.append('name=?'); values.append((data['name'] or '').strip())
+    if 'description' in data:
+        updates.append('description=?'); values.append((data['description'] or '').strip())
+    if 'enabled' in data:
+        updates.append('enabled=?'); values.append(1 if data['enabled'] else 0)
+    if 'scopes' in data and data['scopes'] is not None:
+        updates.append('scopes_json=?'); values.append(json.dumps(data['scopes'], ensure_ascii=False))
+    if 'allowed_ips' in data and data['allowed_ips'] is not None:
+        updates.append('allowed_ips_json=?'); values.append(json.dumps(data['allowed_ips'], ensure_ascii=False))
+    if not updates:
+        return {'ok': True}
+    updates.append('updated_by=?'); values.append(admin['id'])
+    updates.append('updated_at=?'); values.append(now())
+    values.append(client_id)
+    with db() as conn:
+        cur = conn.execute(f"UPDATE automation_clients SET {', '.join(updates)} WHERE id=?", values)
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='自动化客户端不存在')
+        write_automation_log(conn, client_id=client_id, action='automation.client.update', target_type='automation_client', target_id=str(client_id), metadata=data)
+    return {'ok': True}
+
+
+@app.post("/api/admin/automation/secrets/{secret_id}/revoke")
+def admin_revoke_automation_secret(secret_id: int, payload: AutomationSecretRevokeIn, authorization: str | None = Header(default=None)):
+    admin = require_admin(current_user(authorization))
+    with db() as conn:
+        secret = conn.execute("SELECT * FROM automation_secrets WHERE id=?", (secret_id,)).fetchone()
+        if not secret:
+            raise HTTPException(status_code=404, detail='Automation key 不存在')
+        conn.execute("UPDATE automation_secrets SET status='revoked', revoked_by=?, revoked_at=?, reveal_hint=? WHERE id=?", (admin['id'], now(), (payload.reason or '').strip(), secret_id))
+        write_automation_log(conn, client_id=secret['client_id'], secret_id=secret_id, action='automation.secret.revoke', target_type='automation_secret', target_id=str(secret_id), metadata={'reason': (payload.reason or '').strip()})
+    return {'ok': True}
+
+
+@app.post("/api/admin/automation/webhooks")
+def admin_create_automation_webhook(payload: AutomationWebhookIn, authorization: str | None = Header(default=None)):
+    admin = require_admin(current_user(authorization))
+    secret = f"whsec_{secrets.token_urlsafe(24)}"
+    now_ts = now()
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO automation_webhooks(client_id,name,target_url,events_json,secret,enabled,last_test_at,created_by,updated_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (payload.client_id, payload.name.strip(), payload.target_url.strip(), json.dumps(payload.events, ensure_ascii=False), secret, 1 if payload.enabled else 0, '', admin['id'], admin['id'], now_ts, now_ts),
+        )
+        row = conn.execute("SELECT * FROM automation_webhooks WHERE id=?", (cur.lastrowid,)).fetchone()
+        write_automation_log(conn, client_id=payload.client_id, action='automation.webhook.create', target_type='automation_webhook', target_id=str(cur.lastrowid), metadata={'name': payload.name.strip(), 'events': payload.events})
+    return {'webhook': automation_webhook_to_dict(row), 'secret': secret}
+
+
+@app.patch("/api/admin/automation/webhooks/{webhook_id}")
+def admin_update_automation_webhook(webhook_id: int, payload: AutomationWebhookIn, authorization: str | None = Header(default=None)):
+    admin = require_admin(current_user(authorization))
+    with db() as conn:
+        cur = conn.execute("UPDATE automation_webhooks SET client_id=?, name=?, target_url=?, events_json=?, enabled=?, updated_by=?, updated_at=? WHERE id=?", (payload.client_id, payload.name.strip(), payload.target_url.strip(), json.dumps(payload.events, ensure_ascii=False), 1 if payload.enabled else 0, admin['id'], now(), webhook_id))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='Webhook 不存在')
+        row = conn.execute("SELECT * FROM automation_webhooks WHERE id=?", (webhook_id,)).fetchone()
+        write_automation_log(conn, client_id=payload.client_id, action='automation.webhook.update', target_type='automation_webhook', target_id=str(webhook_id), metadata={'name': payload.name.strip(), 'events': payload.events})
+    return {'webhook': automation_webhook_to_dict(row)}
+
+
+@app.delete("/api/admin/automation/webhooks/{webhook_id}")
+def admin_delete_automation_webhook(webhook_id: int, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        row = conn.execute("SELECT * FROM automation_webhooks WHERE id=?", (webhook_id,)).fetchone()
+        if not row: raise HTTPException(status_code=404, detail='Webhook 不存在')
+        conn.execute("DELETE FROM automation_webhooks WHERE id=?", (webhook_id,))
+        write_automation_log(conn, client_id=row['client_id'], action='automation.webhook.delete', target_type='automation_webhook', target_id=str(webhook_id), metadata={'name': row['name']})
+    return {'ok': True}
+
+
+@app.get("/api/automation/docs.md")
+def automation_docs_markdown():
+    api_ops = [
+        ('POST', '/api/automation/posts', 'API Key', 'posts.write', '创建普通帖子'),
+        ('POST', '/api/automation/articles', 'API Key', 'articles.write', '创建文章'),
+        ('POST', '/api/automation/channels', 'API Key', 'channels.write', '创建频道'),
+        ('POST', '/api/automation/channels/{channel_id}/posts', 'API Key', 'channel_posts.write', '在频道创建内容'),
+        ('GET', '/api/automation/admin/users', 'API Key', 'users.read', '读取后台用户列表'),
+        ('PATCH', '/api/automation/admin/users/{user_id}', 'API Key', 'users.update', '修改用户资料'),
+        ('POST', '/api/automation/admin/users/{user_id}/freeze', 'API Key', 'users.freeze', '冻结用户'),
+        ('POST', '/api/automation/admin/users/{user_id}/ban', 'API Key', 'users.ban', '封禁用户'),
+        ('DELETE', '/api/automation/admin/users/{user_id}', 'API Key', 'users.delete', '删除用户'),
+        ('GET', '/api/automation/admin/reports', 'API Key', 'reports.read', '读取举报'),
+        ('PATCH', '/api/automation/admin/reports/{report_id}', 'API Key', 'reports.update', '处理举报'),
+        ('GET', '/api/automation/admin/posts', 'API Key', 'posts.read', '读取后台帖子'),
+        ('PATCH', '/api/automation/admin/posts/{post_id}', 'API Key', 'posts.update', '修改帖子'),
+        ('DELETE', '/api/automation/admin/posts/{post_id}', 'API Key', 'posts.delete', '删除帖子'),
+        ('GET', '/api/automation/admin/comments', 'API Key', 'comments.read', '读取后台评论'),
+        ('DELETE', '/api/automation/admin/comments/{comment_id}', 'API Key', 'comments.delete', '删除评论'),
+        ('GET', '/api/automation/admin/announcements', 'API Key', 'announcements.read', '读取公告'),
+        ('POST', '/api/automation/admin/announcements', 'API Key', 'announcements.write', '创建公告'),
+        ('PATCH', '/api/automation/admin/announcements/{announcement_id}', 'API Key', 'announcements.update', '修改公告'),
+        ('DELETE', '/api/automation/admin/announcements/{announcement_id}', 'API Key', 'announcements.delete', '删除公告'),
+        ('GET', '/api/automation/admin/donors', 'API Key', 'donors.read', '读取捐赠者'),
+        ('POST', '/api/automation/admin/donors', 'API Key', 'donors.write', '创建捐赠者'),
+        ('PATCH', '/api/automation/admin/donors/{donor_id}', 'API Key', 'donors.update', '修改捐赠者'),
+        ('DELETE', '/api/automation/admin/donors/{donor_id}', 'API Key', 'donors.delete', '删除捐赠者'),
+        ('GET', '/api/automation/admin/articles', 'API Key', 'articles.read', '读取文章后台'),
+        ('PUT', '/api/automation/admin/articles/{article_id}', 'API Key', 'articles.update', '修改文章'),
+        ('DELETE', '/api/automation/admin/articles/{article_id}', 'API Key', 'articles.delete', '删除文章'),
+        ('POST', '/api/automation/admin/article-categories', 'API Key', 'article_categories.write', '创建文章分类'),
+        ('PUT', '/api/automation/admin/article-categories/{category_id}', 'API Key', 'article_categories.update', '修改文章分类'),
+        ('DELETE', '/api/automation/admin/article-categories/{category_id}', 'API Key', 'article_categories.delete', '删除/停用文章分类'),
+        ('GET', '/api/automation/admin/channels', 'API Key', 'channels.read', '读取频道与频道帖子'),
+        ('PUT', '/api/automation/admin/channels/{channel_id}', 'API Key', 'channels.update', '修改频道'),
+        ('DELETE', '/api/automation/admin/channels/{channel_id}', 'API Key', 'channels.delete', '删除频道'),
+        ('POST', '/api/automation/admin/channels/{channel_id}/sync', 'API Key', 'channels.sync', '同步频道源'),
+        ('PUT', '/api/automation/admin/channel-posts/{post_id}', 'API Key', 'channel_posts.update', '修改频道帖子'),
+        ('DELETE', '/api/automation/admin/channel-posts/{post_id}', 'API Key', 'channel_posts.delete', '删除频道帖子'),
+        ('GET', '/api/automation/admin/music', 'API Key', 'music.read', '读取音乐后台'),
+        ('POST', '/api/automation/admin/music/sources', 'API Key', 'music.write', '创建音乐来源'),
+        ('PUT', '/api/automation/admin/music/sources/{source_id}', 'API Key', 'music.update', '修改音乐来源'),
+        ('DELETE', '/api/automation/admin/music/sources/{source_id}', 'API Key', 'music.delete', '删除音乐来源'),
+        ('GET', '/api/automation/admin/market', 'API Key', 'market.read', '读取市场后台'),
+        ('POST', '/api/automation/admin/market/items', 'API Key', 'market.write', '创建市场商品'),
+        ('PUT', '/api/automation/admin/market/items/{item_id}', 'API Key', 'market.update', '修改市场商品'),
+        ('PATCH', '/api/automation/admin/market/items/{item_id}/enabled', 'API Key', 'market.update', '启用/禁用市场商品'),
+        ('DELETE', '/api/automation/admin/market/items/{item_id}', 'API Key', 'market.delete', '删除/归档市场商品'),
+        ('GET', '/api/automation/admin/settings', 'API Key', 'settings.read', '读取系统设置'),
+        ('PUT', '/api/automation/admin/settings', 'API Key', 'settings.update', '修改系统设置'),
+        ('GET', '/api/automation/admin/overview', 'API Key', 'overview.read', '读取后台总览'),
+        ('GET', '/api/automation/admin/risk', 'API Key', 'risk.read', '读取风控面板'),
+    ]
+    web_ops = [
+        ('GET', '/api/admin/automation', 'cookie/会话', 'automation.admin.read', '自动化中心后台首页数据'),
+        ('PATCH', '/api/admin/automation/clients/{client_id}', 'cookie/会话', 'automation.clients.update', '修改 client/Scopes/IP'),
+        ('POST', '/api/admin/automation/clients/{client_id}/rotate-key', 'cookie/会话', 'automation.keys.write', '轮换新 key'),
+        ('POST', '/api/admin/automation/secrets/{secret_id}/revoke', 'cookie/会话', 'automation.keys.delete', '撤销 key'),
+        ('POST', '/api/admin/automation/webhooks', 'cookie/会话', 'automation.webhooks.write', '创建 webhook'),
+        ('PATCH', '/api/admin/automation/webhooks/{webhook_id}', 'cookie/会话', 'automation.webhooks.update', '修改 webhook'),
+        ('DELETE', '/api/admin/automation/webhooks/{webhook_id}', 'cookie/会话', 'automation.webhooks.delete', '删除 webhook'),
+    ]
+    lines = [
+        '# 泓聊社区 Automation API',
+        '',
+        '这份文档现在仍然**不像 HLOOL Mail 那么完整**，原因是此前我先优先把执行链路和后台控制面做出来了，文档只写了简版。现在我已经开始按 HLOOL Mail 的结构补：**API Key 自动化端点表 + Web 会话端点表 + Skill 文档**，不再只是普通说明页。',
+        '',
+        '## 基本规则',
+        '',
+        '- API Key 自动化调用统一使用 `X-Automation-Key`。',
+        '- 不要猜未文档化参数；优先按本文档和 `/api/automation/openapi.json` 调用。',
+        '- 后台自动化分为两层：**API Key 自动化端点** 与 **Web 会话/cookie 端点**。这点必须像 HLOOL Mail 一样明确区分。',
+        '- 高危操作（删除、封禁、冻结、系统设置修改）默认需要审计。',
+        '',
+        '## API Key 自动化端点',
+        '',
+        '| 方法 | 路径 | 认证 | Scope | 用途 |',
+        '| --- | --- | --- | --- | --- |',
+    ]
+    lines += [f'| `{m}` | `{p}` | {a} | `{s}` | {d} |' for m,p,a,s,d in api_ops]
+    lines += [
+        '',
+        '## Web 会话 API 端点',
+        '',
+        '这些端点需要后台管理员的 cookie / session，不能通过 `X-Automation-Key` 直接调用。这一点之前文档写得不够像 HLOOL Mail，现在已显式分开。',
+        '',
+        '| 方法 | 路径 | 认证 | 对应能力 | 用途 |',
+        '| --- | --- | --- | --- | --- |',
+    ]
+    lines += [f'| `{m}` | `{p}` | {a} | `{s}` | {d} |' for m,p,a,s,d in web_ops]
+    lines += [
+        '',
+        '## Scope 组',
+        '',
+        '- 内容域：`posts.*` `comments.*` `reports.*`',
+        '- 用户域：`users.*`',
+        '- 文章域：`articles.*` `article_categories.*` `media.*`',
+        '- 频道域：`channels.*` `channel_posts.*`',
+        '- 商业域：`market.*` `music.*` `donors.*`',
+        '- 配置域：`settings.*` `overview.read` `risk.read`',
+        '- 自动化中心自身：`automation.clients.*` `automation.keys.*` `automation.webhooks.*` `automation.logs.read`',
+        '',
+        '## Webhook 事件',
+        '',
+        '- `post.created`',
+        '- `article.created`',
+        '- `channel.created`',
+        '- `channel_post.created`',
+        '',
+        '## 响应与审计',
+        '',
+        '- 当前 automation 响应主要是普通 JSON；后续会继续向 HLOOL Mail 风格的统一响应信封收敛。',
+        '- 每次成功写操作都会写入 `automation_logs`。Webhook 投递会写入 `automation_webhook_deliveries`。',
+        '',
+        '## Skill 文档',
+        '',
+        '- 机器可读/AI 使用的 Skill 位于 `/api/automation/skill.md`。',
+        '- 这是对 HLOOL Mail `skill.go -> SkillMarkdown` 产物的对齐，不再只是普通说明段落。',
+        ''
+    ]
+    return Response('\n'.join(lines), media_type='text/markdown; charset=utf-8')
+
+
+@app.get("/api/automation/skill.md")
+def automation_skill_markdown():
+    body = """---
+name: yhdet-community-automation
+description: 使用泓聊社区 Automation API 操控社区后台，包括帖子、文章、频道、市场、用户、举报、公告、设置和自动化中心自身。适用于用户要求 AI 助手直接管理整个社区后台时。
+---
+
+# 泓聊社区 Automation API Skill
+
+使用这个 Skill 通过已文档化的公开 Automation API 操作泓聊社区后台。参考文档位于 `/api/automation/docs.md`，OpenAPI 文档位于 `/api/automation/openapi.json`。
+
+## 基本规则
+
+- API Key 自动化调用使用 `X-Automation-Key`。
+- 不要反向分析网页 DOM、猜测隐藏端点或发明参数；优先使用 `/api/automation/docs.md` 已列出的接口。
+- 这是一份 **Automation API Key 调用指南**。后台 Web Console 中的 client/key 创建、scope 调整、webhook 编辑、审计查看等，属于 cookie/session 端点。
+- 调用受保护端点前，先确认当前 key 是否具备所需 scope。
+- 对删除、冻结、封禁、设置修改、市场商品归档这类高危操作，调用前应向用户复述影响范围。
+
+## 推荐工作流
+
+1. 先读 `/api/automation/docs.md` 确认端点属于 API Key 还是 Web 会话。
+2. 再确认当前 key 的 scope 足够。
+3. 先读后写：先列出现状，再执行变更。
+4. 执行后读取结果或检查 `automation_logs` / `automation_webhook_deliveries` 确认副作用。
+5. 对高危动作给出审计摘要。
+
+## 常用 Automation 端点
+
+- `POST /api/automation/posts`
+- `POST /api/automation/articles`
+- `POST /api/automation/channels`
+- `POST /api/automation/channels/{channel_id}/posts`
+- `GET /api/automation/admin/users`
+- `GET /api/automation/admin/posts`
+- `GET /api/automation/admin/articles`
+- `GET /api/automation/admin/channels`
+- `GET /api/automation/admin/market`
+- `GET /api/automation/admin/music`
+- `GET /api/automation/admin/settings`
+- `GET /api/automation/admin/overview`
+- `GET /api/automation/admin/risk`
+
+## Scope 速查
+
+- 内容域：`posts.*` `comments.*` `reports.*`
+- 用户域：`users.*`
+- 文章域：`articles.*` `article_categories.*`
+- 频道域：`channels.*` `channel_posts.*`
+- 商业域：`market.*` `music.*` `donors.*`
+- 配置域：`settings.*` `overview.read` `risk.read`
+- 自动化中心自身：`automation.clients.*` `automation.keys.*` `automation.webhooks.*` `automation.logs.read`
+
+## 重要说明
+
+- 当前泓聊社区已经有 Skill 路由：`/api/automation/skill.md`。
+- 你之前看到“没有 skill”的根因不是没有这个端点，而是**内容还不够像 HLOOL Mail 的 SkillMarkdown 产物**，之前更像一段普通 markdown 说明。现在已经改成了明确的 Skill 结构。
+"""
+    return Response(body, media_type='text/markdown; charset=utf-8')
+
+
+@app.get("/api/automation/openapi.json")
+def automation_openapi_json():
+    paths = {
+        "/api/automation/docs.md": {"get": {"summary": "Automation markdown docs", "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/skill.md": {"get": {"summary": "Automation skill markdown", "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/openapi.json": {"get": {"summary": "OpenAPI JSON", "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/posts": {"post": {"summary": "Create post", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/articles": {"post": {"summary": "Create article", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/channels": {"post": {"summary": "Create channel", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/channels/{channel_id}/posts": {"post": {"summary": "Create channel post", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/users": {"get": {"summary": "List users", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/posts": {"get": {"summary": "List admin posts", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/comments": {"get": {"summary": "List admin comments", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/reports": {"get": {"summary": "List reports", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/announcements": {"get": {"summary": "List announcements", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}, "post": {"summary": "Create announcement", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/donors": {"get": {"summary": "List donors", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}, "post": {"summary": "Create donor", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/articles": {"get": {"summary": "List articles", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/article-categories": {"post": {"summary": "Create article category", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/channels": {"get": {"summary": "List channels", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/channel-posts/{post_id}": {"put": {"summary": "Update channel post", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}, "delete": {"summary": "Delete channel post", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/music": {"get": {"summary": "Get music admin state", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/market": {"get": {"summary": "Get market admin state", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/market/items": {"post": {"summary": "Create market item", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/market/add-keys": {"post": {"summary": "Import market keys", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/market/orders/{order_id}/fulfill": {"put": {"summary": "Fulfill market order", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/market/audit/{order_id}": {"put": {"summary": "Audit market order", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/settings": {"get": {"summary": "Get settings", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}, "put": {"summary": "Update settings", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/overview": {"get": {"summary": "Get overview", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/risk": {"get": {"summary": "Get risk panel", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/deliveries": {"get": {"summary": "List webhook deliveries", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+        "/api/automation/admin/deliveries/{delivery_id}/retry": {"post": {"summary": "Retry webhook delivery", "security": [{"automationKey": []}], "responses": {"200": {"description": "ok"}}}},
+    }
+    spec = {
+        "openapi": "3.1.0",
+        "info": {"title": "YHDET Automation API", "version": "0.4.0", "description": "Community-wide automation control plane inspired by HLOOL Mail. Includes API Key automation endpoints and supporting docs/skill artifacts."},
+        "components": {"securitySchemes": {"automationKey": {"type": "apiKey", "in": "header", "name": "X-Automation-Key"}}},
+        "security": [{"automationKey": []}],
+        "paths": paths,
+    }
+    return Response(json.dumps(spec, ensure_ascii=False), media_type='application/json; charset=utf-8')
+
+
+@app.get("/api/automation/openapi.yaml")
+def automation_openapi_yaml():
+    yaml_text = """openapi: 3.1.0
+info:
+  title: YHDET Automation API
+  version: 0.1.0
+components:
+  securitySchemes:
+    automationKey:
+      type: apiKey
+      in: header
+      name: X-Automation-Key
+security:
+  - automationKey: []
+paths:
+  /api/automation/docs.md:
+    get:
+      summary: Markdown docs
+      responses:
+        '200':
+          description: ok
+  /api/automation/openapi.json:
+    get:
+      summary: OpenAPI JSON
+      responses:
+        '200':
+          description: ok
+"""
+    return Response(yaml_text, media_type='application/yaml; charset=utf-8')
 
 
 def article_category_to_dict(c: sqlite3.Row, article_count: int | None = None) -> dict[str, Any]:
@@ -4492,6 +6344,26 @@ def admin_create_article(payload: ArticleIn, authorization: str | None = Header(
     return {"ok": True, "id": cur.lastrowid, "slug": slug}
 
 
+@app.post("/api/automation/articles")
+def automation_create_article(payload: ArticleIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'articles.write')
+    status = 'published' if payload.status == 'published' else 'draft'
+    ts = now()
+    with db() as conn:
+        if payload.category_id:
+            if not conn.execute("SELECT id FROM article_categories WHERE id=?", (payload.category_id,)).fetchone():
+                raise HTTPException(status_code=400, detail='请选择有效文章分类')
+        slug = unique_article_slug(conn, payload.title, payload.slug)
+        cur = conn.execute(
+            """INSERT INTO articles(category_id,author_id,title,slug,summary,content_markdown,cover_image,status,views,published_at,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (payload.category_id, auth['actor_user_id'], payload.title.strip(), slug, (payload.summary or '').strip(), payload.content_markdown.strip(), (payload.cover_image or '').strip(), status, 0, ts if status == 'published' else '', ts, ts),
+        )
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.article.create', target_type='article', target_id=str(cur.lastrowid), request_ip=auth['ip'], metadata={'title': payload.title.strip(), 'slug': slug})
+    dispatch_automation_webhooks('article.created', {'article_id': cur.lastrowid, 'slug': slug, 'title': payload.title.strip()}, client_id=auth['client_id'])
+    return {"ok": True, "id": cur.lastrowid, "slug": slug}
+
+
 @app.put("/api/admin/articles/{article_id}")
 def admin_update_article(article_id: int, payload: ArticleIn, authorization: str | None = Header(default=None)):
     require_admin(current_user(authorization))
@@ -4533,6 +6405,88 @@ def admin_delete_article(article_id: int, authorization: str | None = Header(def
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="文章不存在")
     return {"ok": True}
+
+
+@app.get("/api/automation/admin/articles")
+def automation_admin_articles(request: Request, q: str = '', x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'articles.read')
+    with db() as conn:
+        like = f"%{q.strip()}%"
+        params=[]; where='1=1'
+        if q.strip():
+            where += " AND (a.title LIKE ? OR a.summary LIKE ? OR a.content_markdown LIKE ? OR c.name LIKE ?)"
+            params.extend([like, like, like, like])
+        articles = conn.execute(f"SELECT a.*, c.name AS category_name, c.slug AS category_slug, u.username AS author FROM articles a LEFT JOIN article_categories c ON c.id=a.category_id LEFT JOIN users u ON u.id=a.author_id WHERE {where} ORDER BY datetime(a.updated_at) DESC, a.id DESC LIMIT 120", params).fetchall()
+        cats = conn.execute("SELECT c.*, (SELECT COUNT(*) FROM articles a WHERE a.category_id=c.id) AS article_count FROM article_categories c ORDER BY c.sort_order ASC, c.id ASC").fetchall()
+    return {'items':[article_to_dict(a, include_content=True) for a in articles], 'categories':[article_category_to_dict(c, c['article_count']) for c in cats]}
+
+
+@app.post("/api/automation/admin/article-categories")
+def automation_admin_create_article_category(payload: ArticleCategoryIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'article_categories.write')
+    with db() as conn:
+        slug = clean_slug(payload.slug or payload.name)
+        try:
+            cur = conn.execute("INSERT INTO article_categories(name,slug,description,sort_order,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (payload.name.strip(), slug, (payload.description or '').strip(), int(payload.sort_order or 0), 1 if payload.enabled else 0, now(), now()))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail='文章分类名称或 slug 已存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.article_category.create', target_type='article_category', target_id=str(cur.lastrowid), request_ip=auth['ip'])
+    return {'ok': True, 'id': cur.lastrowid}
+
+
+@app.put("/api/automation/admin/article-categories/{category_id}")
+def automation_admin_update_article_category(category_id: int, payload: ArticleCategoryIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'article_categories.update')
+    with db() as conn:
+        slug = clean_slug(payload.slug or payload.name)
+        try:
+            cur = conn.execute("UPDATE article_categories SET name=?, slug=?, description=?, sort_order=?, enabled=?, updated_at=? WHERE id=?", (payload.name.strip(), slug, (payload.description or '').strip(), int(payload.sort_order or 0), 1 if payload.enabled else 0, now(), category_id))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail='文章分类名称或 slug 已存在')
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='文章分类不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.article_category.update', target_type='article_category', target_id=str(category_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/article-categories/{category_id}")
+def automation_admin_delete_article_category(category_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'article_categories.delete')
+    with db() as conn:
+        used = conn.execute("SELECT COUNT(*) FROM articles WHERE category_id=?", (category_id,)).fetchone()[0]
+        if used:
+            conn.execute("UPDATE article_categories SET enabled=0, updated_at=? WHERE id=?", (now(), category_id))
+            write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.article_category.archive', target_type='article_category', target_id=str(category_id), request_ip=auth['ip'])
+            return {'ok': True, 'archived': True, 'message': '分类下已有文章，已停用保留历史'}
+        cur = conn.execute("DELETE FROM article_categories WHERE id=?", (category_id,))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='文章分类不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.article_category.delete', target_type='article_category', target_id=str(category_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.put("/api/automation/admin/articles/{article_id}")
+def automation_admin_update_article(article_id: int, payload: ArticleIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'articles.update')
+    status = 'published' if payload.status == 'published' else 'draft'
+    with db() as conn:
+        old = conn.execute("SELECT * FROM articles WHERE id=?", (article_id,)).fetchone()
+        if not old: raise HTTPException(status_code=404, detail='文章不存在')
+        if payload.category_id and not conn.execute("SELECT id FROM article_categories WHERE id=?", (payload.category_id,)).fetchone():
+            raise HTTPException(status_code=400, detail='请选择有效文章分类')
+        slug = unique_article_slug(conn, payload.title, payload.slug or old['slug'], article_id)
+        published_at = old['published_at'] or (now() if status == 'published' else '')
+        conn.execute("UPDATE articles SET category_id=?, title=?, slug=?, summary=?, content_markdown=?, cover_image=?, status=?, published_at=?, updated_at=? WHERE id=?", (payload.category_id, payload.title.strip(), slug, (payload.summary or '').strip(), payload.content_markdown.strip(), (payload.cover_image or '').strip(), status, published_at if status == 'published' else '', now(), article_id))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.article.update', target_type='article', target_id=str(article_id), request_ip=auth['ip'], metadata={'slug': slug})
+    return {'ok': True, 'slug': slug}
+
+
+@app.delete("/api/automation/admin/articles/{article_id}")
+def automation_admin_delete_article(article_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'articles.delete')
+    with db() as conn:
+        cur = conn.execute("DELETE FROM articles WHERE id=?", (article_id,))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='文章不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.article.delete', target_type='article', target_id=str(article_id), request_ip=auth['ip'])
+    return {'ok': True}
 
 
 @app.get("/api/admin/media-assets")
@@ -4812,6 +6766,26 @@ def admin_create_channel(payload: ChannelIn, authorization: str | None = Header(
     return {"id": cur.lastrowid}
 
 
+@app.post("/api/automation/channels")
+def automation_create_channel(payload: ChannelIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'channels.write')
+    if payload.mode not in {'manual', 'api'}:
+        raise HTTPException(status_code=400, detail='频道模式只能是 manual 或 api')
+    slug = clean_slug(payload.slug)
+    with db() as conn:
+        try:
+            cur = conn.execute(
+                """INSERT INTO channels(name,slug,description,mode,enabled,source_type,endpoint_url,auth_type,auth_secret_ref,mapping_json,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (payload.name.strip(), slug, (payload.description or '').strip(), payload.mode, 1 if payload.enabled else 0, (payload.source_type or '').strip(), (payload.endpoint_url or '').strip(), (payload.auth_type or 'none').strip(), (payload.auth_secret_ref or '').strip(), payload.mapping_json or '{}', now(), now()),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail='频道 slug 已存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.channel.create', target_type='channel', target_id=str(cur.lastrowid), request_ip=auth['ip'], metadata={'name': payload.name.strip(), 'slug': slug})
+    dispatch_automation_webhooks('channel.created', {'channel_id': cur.lastrowid, 'name': payload.name.strip(), 'slug': slug}, client_id=auth['client_id'])
+    return {"ok": True, "id": cur.lastrowid}
+
+
 @app.put("/api/admin/channels/{channel_id}")
 def admin_update_channel(channel_id: int, payload: ChannelIn, authorization: str | None = Header(default=None)):
     require_admin(current_user(authorization))
@@ -4858,6 +6832,23 @@ def admin_create_channel_post(channel_id: int, payload: ChannelPostIn, authoriza
     return {"id": cur.lastrowid, "pruned": pruned}
 
 
+@app.post("/api/automation/channels/{channel_id}/posts")
+def automation_create_channel_post(channel_id: int, payload: ChannelPostIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'channel_posts.write')
+    with db() as conn:
+        ch = conn.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
+        if not ch:
+            raise HTTPException(status_code=404, detail='频道不存在')
+        cur = conn.execute(
+            "INSERT INTO channel_posts(channel_id,title,content,author_name,external_url,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (channel_id, payload.title.strip(), payload.content.strip(), (payload.author_name or auth['actor_username'] or 'Automation').strip(), (payload.external_url or '').strip(), now(), now()),
+        )
+        pruned = prune_channel_posts(conn, channel_id, 50)
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.channel_post.create', target_type='channel_post', target_id=str(cur.lastrowid), request_ip=auth['ip'], metadata={'channel_id': channel_id, 'title': payload.title.strip()})
+    dispatch_automation_webhooks('channel_post.created', {'channel_post_id': cur.lastrowid, 'channel_id': channel_id, 'title': payload.title.strip()}, client_id=auth['client_id'])
+    return {"ok": True, "id": cur.lastrowid, "pruned": pruned}
+
+
 @app.delete("/api/admin/channel_posts/{post_id}")
 def admin_delete_channel_post(post_id: int, authorization: str | None = Header(default=None)):
     require_admin(current_user(authorization))
@@ -4867,6 +6858,29 @@ def admin_delete_channel_post(post_id: int, authorization: str | None = Header(d
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="频道内容不存在")
     return {"ok": True}
+
+
+@app.put("/api/automation/admin/channel-posts/{post_id}")
+def automation_admin_update_channel_post(post_id: int, payload: ChannelPostIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'channel_posts.update')
+    with db() as conn:
+        cur = conn.execute("UPDATE channel_posts SET title=?, content=?, author_name=?, external_url=?, updated_at=? WHERE id=?", (payload.title.strip(), payload.content.strip(), (payload.author_name or auth['actor_username'] or 'Automation').strip(), (payload.external_url or '').strip(), now(), post_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='频道内容不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.channel_post.update', target_type='channel_post', target_id=str(post_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/channel-posts/{post_id}")
+def automation_admin_delete_channel_post(post_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'channel_posts.delete')
+    with db() as conn:
+        conn.execute("DELETE FROM channel_comments WHERE channel_post_id=?", (post_id,))
+        cur = conn.execute("DELETE FROM channel_posts WHERE id=?", (post_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='频道内容不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.channel_post.delete', target_type='channel_post', target_id=str(post_id), request_ip=auth['ip'])
+    return {'ok': True}
 
 
 
@@ -5113,6 +7127,57 @@ def admin_sync_channel(channel_id: int, authorization: str | None = Header(defau
         return _sync_channel_from_source(conn, ch)
 
 
+@app.get("/api/automation/admin/channels")
+def automation_admin_channels(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'channels.read')
+    with db() as conn:
+        rows = conn.execute("SELECT ch.*, (SELECT COUNT(*) FROM channel_posts cp WHERE cp.channel_id=ch.id) AS post_count FROM channels ch ORDER BY ch.id DESC").fetchall()
+        posts = conn.execute("SELECT cp.*, ch.name AS channel_name, ch.slug AS channel_slug, (SELECT COUNT(*) FROM channel_comments cc WHERE cc.channel_post_id=cp.id) AS comment_count FROM channel_posts cp JOIN channels ch ON ch.id=cp.channel_id ORDER BY datetime(cp.created_at) DESC, cp.id DESC LIMIT 100").fetchall()
+    return {'items': [channel_to_dict(r, r['post_count']) for r in rows], 'posts': [channel_post_to_dict(p) for p in posts]}
+
+
+@app.put("/api/automation/admin/channels/{channel_id}")
+def automation_admin_update_channel(channel_id: int, payload: ChannelIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'channels.update')
+    if payload.mode not in {'manual', 'api'}:
+        raise HTTPException(status_code=400, detail='频道模式只能是 manual 或 api')
+    slug = clean_slug(payload.slug)
+    with db() as conn:
+        try:
+            cur = conn.execute("UPDATE channels SET name=?, slug=?, description=?, mode=?, enabled=?, source_type=?, endpoint_url=?, auth_type=?, auth_secret_ref=?, mapping_json=?, updated_at=? WHERE id=?", (payload.name.strip(), slug, (payload.description or '').strip(), payload.mode, 1 if payload.enabled else 0, (payload.source_type or '').strip(), (payload.endpoint_url or '').strip(), (payload.auth_type or 'none').strip(), (payload.auth_secret_ref or '').strip(), payload.mapping_json or '{}', now(), channel_id))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail='频道 slug 已存在')
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='频道不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.channel.update', target_type='channel', target_id=str(channel_id), request_ip=auth['ip'], metadata={'slug': slug})
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/channels/{channel_id}")
+def automation_admin_delete_channel(channel_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'channels.delete')
+    with db() as conn:
+        conn.execute("DELETE FROM channel_comments WHERE channel_post_id IN (SELECT id FROM channel_posts WHERE channel_id=?)", (channel_id,))
+        conn.execute("DELETE FROM channel_posts WHERE channel_id=?", (channel_id,))
+        cur = conn.execute("DELETE FROM channels WHERE id=?", (channel_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail='频道不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.channel.delete', target_type='channel', target_id=str(channel_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.post("/api/automation/admin/channels/{channel_id}/sync")
+def automation_admin_sync_channel(channel_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'channels.sync')
+    with db() as conn:
+        ch = conn.execute("SELECT * FROM channels WHERE id=?", (channel_id,)).fetchone()
+        if not ch:
+            raise HTTPException(status_code=404, detail='频道不存在')
+        result = _sync_channel_from_source(conn, ch)
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.channel.sync', target_type='channel', target_id=str(channel_id), request_ip=auth['ip'])
+    return result
+
+
 @app.get("/api/games")
 def games():
     return {"items": ["扫雷", "俄罗斯方块", "乒乓球", "贪吃蛇"], "message": "小游戏专区开放中"}
@@ -5212,6 +7277,68 @@ def admin_delete_music_source(source_id: int, authorization: str | None = Header
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="接口来源不存在")
     return {"ok": True}
+
+
+@app.get("/api/automation/admin/overview")
+def automation_admin_overview(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'overview.read')
+    return admin_overview(authorization='Bearer ignored')
+
+
+@app.get("/api/automation/admin/risk")
+def automation_admin_risk(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'risk.read')
+    return admin_risk(authorization='Bearer ignored')
+
+
+@app.get("/api/automation/admin/music")
+def automation_admin_music(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'music.read')
+    with db() as conn:
+        settings = get_settings(conn)
+        sources = list_music_sources(conn)
+    return {'settings': {'music_default_bitrate': settings.get('music_default_bitrate', 320)}, 'sources': sources}
+
+
+@app.post("/api/automation/admin/music/sources")
+def automation_admin_create_music_source(payload: MusicSourceIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'music.write')
+    parsed = urllib.parse.urlparse(payload.base_url.strip())
+    if parsed.scheme not in {'http','https'} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail='音乐 API 地址不合法')
+    with db() as conn:
+        try:
+            cur = conn.execute("INSERT INTO music_api_sources(name,source_code,base_url,enabled,sort_order,note,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (payload.name.strip(), payload.source_code.strip() or 'netease', payload.base_url.strip(), 1 if payload.enabled else 0, payload.sort_order, (payload.note or '').strip(), now(), now()))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail='接口来源名称已存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.music.create', target_type='music_source', target_id=str(cur.lastrowid), request_ip=auth['ip'])
+    return {'ok': True, 'id': cur.lastrowid}
+
+
+@app.put("/api/automation/admin/music/sources/{source_id}")
+def automation_admin_update_music_source(source_id: int, payload: MusicSourceIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'music.update')
+    parsed = urllib.parse.urlparse(payload.base_url.strip())
+    if parsed.scheme not in {'http','https'} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail='音乐 API 地址不合法')
+    with db() as conn:
+        try:
+            cur = conn.execute("UPDATE music_api_sources SET name=?, source_code=?, base_url=?, enabled=?, sort_order=?, note=?, updated_at=? WHERE id=?", (payload.name.strip(), payload.source_code.strip() or 'netease', payload.base_url.strip(), 1 if payload.enabled else 0, payload.sort_order, (payload.note or '').strip(), now(), source_id))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=409, detail='接口来源名称已存在')
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='接口来源不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.music.update', target_type='music_source', target_id=str(source_id), request_ip=auth['ip'])
+    return {'ok': True}
+
+
+@app.delete("/api/automation/admin/music/sources/{source_id}")
+def automation_admin_delete_music_source(source_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'music.delete')
+    with db() as conn:
+        cur = conn.execute("DELETE FROM music_api_sources WHERE id=?", (source_id,))
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail='接口来源不存在')
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.music.delete', target_type='music_source', target_id=str(source_id), request_ip=auth['ip'])
+    return {'ok': True}
 
 
 def _music_api_request(settings: dict[str, Any], params: dict[str, Any], source_config: dict[str, Any] | None = None) -> Any:
@@ -5466,3 +7593,137 @@ if frontend_dist.exists():
                 pass
         return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
+
+
+@app.get("/api/admin/automation/deliveries")
+def admin_automation_deliveries(authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        rows = conn.execute("SELECT d.*, w.name AS webhook_name FROM automation_webhook_deliveries d JOIN automation_webhooks w ON w.id=d.webhook_id ORDER BY d.id DESC LIMIT 200").fetchall()
+    return {"items": [{**automation_delivery_to_dict(r), "webhook_name": r["webhook_name"]} for r in rows]}
+
+
+@app.post("/api/admin/automation/deliveries/{delivery_id}/retry")
+def admin_retry_automation_delivery(delivery_id: int, authorization: str | None = Header(default=None)):
+    require_admin(current_user(authorization))
+    with db() as conn:
+        row = conn.execute("SELECT d.*, w.* FROM automation_webhook_deliveries d JOIN automation_webhooks w ON w.id=d.webhook_id WHERE d.id=?", (delivery_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="delivery 不存在")
+        payload = row['request_body'] or json.dumps({"event": row['event_name'], "data": {}}, ensure_ascii=False)
+        new_id = deliver_automation_webhook_row(conn, row, row['event_name'], payload)
+    return {"ok": True, "delivery_id": new_id}
+
+
+@app.get("/api/automation/admin/deliveries")
+def automation_admin_deliveries(request: Request, x_automation_key: str | None = Header(default=None)):
+    get_automation_auth(x_automation_key, request, 'automation.logs.read')
+    with db() as conn:
+        rows = conn.execute("SELECT d.*, w.name AS webhook_name FROM automation_webhook_deliveries d JOIN automation_webhooks w ON w.id=d.webhook_id ORDER BY d.id DESC LIMIT 200").fetchall()
+    return {"items": [{**automation_delivery_to_dict(r), "webhook_name": r["webhook_name"]} for r in rows]}
+
+
+@app.post("/api/automation/admin/deliveries/{delivery_id}/retry")
+def automation_retry_delivery(delivery_id: int, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'automation.webhooks.update')
+    with db() as conn:
+        row = conn.execute("SELECT d.*, w.* FROM automation_webhook_deliveries d JOIN automation_webhooks w ON w.id=d.webhook_id WHERE d.id=?", (delivery_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="delivery 不存在")
+        payload = row['request_body'] or json.dumps({"event": row['event_name'], "data": {}}, ensure_ascii=False)
+        new_id = deliver_automation_webhook_row(conn, row, row['event_name'], payload)
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.delivery.retry', target_type='delivery', target_id=str(new_id), request_ip=auth['ip'])
+    return {"ok": True, "delivery_id": new_id}
+
+
+@app.post("/api/automation/admin/market/add-keys")
+def automation_admin_add_market_keys(payload: MarketKeysIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'market.update')
+    keys = []
+    seen = set()
+    for line in payload.keys_text.splitlines():
+        key = line.strip()
+        if key and key not in seen:
+            keys.append(key); seen.add(key)
+    if not keys: raise HTTPException(status_code=400, detail='没有可导入的卡密')
+    with db() as conn:
+        product = conn.execute("SELECT * FROM market_items WHERE id=?", (payload.product_id,)).fetchone()
+        if not product: raise HTTPException(status_code=404, detail='商品不存在')
+        category = normalize_market_category(product['category'])
+        if fulfillment_method(category) != FulfillmentMethod.CARD_KEY.value: raise HTTPException(status_code=400, detail='只有卡密类商品可以导入卡密')
+        inserted = 0
+        for key in keys:
+            try:
+                cur = conn.execute("INSERT OR IGNORE INTO product_card_keys(product_id,key_content,is_used,created_at) VALUES(?,?,0,?)", (payload.product_id, key, now()))
+                inserted += cur.rowcount
+            except sqlite3.IntegrityError:
+                pass
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.keys', target_type='market_item', target_id=str(payload.product_id), request_ip=auth['ip'], metadata={'inserted': inserted})
+    return {"ok": True, "inserted": inserted, "ignored": len(keys)-inserted}
+
+
+@app.put("/api/automation/admin/market/orders/{order_id}/fulfill")
+def automation_admin_fulfill_market_order(order_id: int, payload: MarketFulfillIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'market.update')
+    with db() as conn:
+        order = conn.execute("SELECT * FROM market_orders WHERE id=?", (order_id,)).fetchone()
+        if not order: raise HTTPException(status_code=404, detail='订单不存在')
+        if order['status'] != OrderStatus.PENDING.value: raise HTTPException(status_code=400, detail='只有待处理订单可以手动发货')
+        category = normalize_market_category(order['category'])
+        if fulfillment_method(category) != FulfillmentMethod.MANUAL_PROCESS.value: raise HTTPException(status_code=400, detail='该订单不是人工履约类型')
+        conn.execute("UPDATE market_orders SET status=?, delivered_content=?, fulfilled_at=? WHERE id=?", (OrderStatus.SUCCESS.value, payload.delivered_content.strip(), now(), order_id))
+        write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.fulfill', target_type='market_order', target_id=str(order_id), request_ip=auth['ip'])
+        order_state = fetch_admin_market_order_dict(conn, order_id)
+    return {"ok": True, "status": OrderStatus.SUCCESS.value, "order": order_state}
+
+
+@app.put("/api/automation/admin/market/audit/{order_id}")
+def automation_admin_audit_market_order(order_id: int, payload: MarketAuditIn, request: Request, x_automation_key: str | None = Header(default=None)):
+    auth = get_automation_auth(x_automation_key, request, 'market.update')
+    try:
+        with db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                order = conn.execute("SELECT o.*, mi.title AS item_title, u.username AS current_username FROM market_orders o JOIN market_items mi ON mi.id=o.item_id JOIN users u ON u.id=o.user_id WHERE o.id=?", (order_id,)).fetchone()
+                if not order: raise HTTPException(status_code=404, detail='订单不存在')
+                if order['status'] != OrderStatus.PENDING_AUDIT.value: raise HTTPException(status_code=400, detail='只有待审核订单可以审核')
+                try:
+                    data = json.loads(order['payload'] or order['shipping_info'] or '{}')
+                except Exception:
+                    raise HTTPException(status_code=400, detail='订单申请数据损坏，无法审核')
+                req_type = data.get('type'); value = str(data.get('value') or '').strip()
+                if req_type not in {'rename','title'} or not value: raise HTTPException(status_code=400, detail='订单申请数据不完整')
+                if payload.approved:
+                    if req_type == 'rename':
+                        if not USERNAME_RE.match(value): raise HTTPException(status_code=400, detail='用户名必须以字母开头，且只能包含字母、数字和下划线！')
+                        exists = conn.execute("SELECT 1 FROM users WHERE username=? AND id<>? AND COALESCE(deleted_at,'')=''", (value, order['user_id'])).fetchone()
+                        if exists: raise HTTPException(status_code=400, detail='该用户名已被占用，无法通过')
+                        conn.execute("UPDATE users SET username=? WHERE id=?", (value, order['user_id']))
+                        result = f"已通过改名申请：{order['current_username']} → {value}"
+                    else:
+                        conn.execute("UPDATE users SET custom_title=? WHERE id=?", (value[:32], order['user_id']))
+                        result = f"已通过头衔申请：{value[:32]}"
+                    conn.execute("UPDATE market_orders SET status=?, delivered_content=?, fulfilled_at=? WHERE id=?", (OrderStatus.SUCCESS.value, result, now(), order_id))
+                    write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.audit.approve', target_type='market_order', target_id=str(order_id), request_ip=auth['ip'])
+                    conn.commit()
+                    return {'ok': True, 'status': OrderStatus.SUCCESS.value, 'message': result, 'order': fetch_admin_market_order_dict(conn, order_id)}
+                reason = (payload.reject_reason or '管理员拒绝该申请').strip()[:500]
+                refund = int(order['cost_points'] or order['price'] or 0)
+                if refund > 0:
+                    try:
+                        conn.execute("INSERT INTO point_ledger(user_id,delta,reason,ref_type,ref_id,created_at) VALUES(?,?,?,?,?,?)", (order['user_id'], refund, 'refund_market_order', 'market_order', order_id, now()))
+                    except sqlite3.IntegrityError:
+                        raise HTTPException(status_code=409, detail='该订单已退款，请勿重复操作')
+                    conn.execute("UPDATE user_points SET available_points=available_points+?, total_earned=total_earned+?, updated_at=? WHERE user_id=?", (refund, refund, now(), order['user_id']))
+                conn.execute("UPDATE market_items SET stock=CASE WHEN stock>=0 THEN stock+1 ELSE stock END, updated_at=? WHERE id=?", (now(), order['item_id']))
+                result = f"审核拒绝：{reason}；已退回 {refund} 泓币"
+                conn.execute("UPDATE market_orders SET status=?, delivered_content=?, fulfilled_at=? WHERE id=?", (OrderStatus.REJECTED.value, result, now(), order_id))
+                refresh_user_points(conn, order['user_id'])
+                write_automation_log(conn, client_id=auth['client_id'], secret_id=auth['secret_id'], action='automation.market.audit.reject', target_type='market_order', target_id=str(order_id), request_ip=auth['ip'], metadata={'refund': refund})
+                conn.commit()
+                return {'ok': True, 'status': OrderStatus.REJECTED.value, 'message': result, 'refund': refund, 'order': fetch_admin_market_order_dict(conn, order_id)}
+            except Exception:
+                conn.rollback(); raise
+    except sqlite3.OperationalError as e:
+        if 'locked' in str(e).lower(): raise HTTPException(status_code=409, detail='系统繁忙，请稍后重试')
+        raise
